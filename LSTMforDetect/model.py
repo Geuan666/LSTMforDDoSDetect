@@ -74,7 +74,7 @@ class DDoSDetector(nn.Module):
     使用LSTM和自注意力的DDoS检测模型
     """
 
-    def __init__(self, input_size=1, hidden_size=128, num_layers=2, num_classes=8, dropout_rate=0.3):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=2, num_classes=17, dropout_rate=0.3):
         """
         初始化DDoS检测模型
         参数:

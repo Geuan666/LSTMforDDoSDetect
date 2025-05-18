@@ -300,10 +300,10 @@ class DataProcessor:
                 logger.info(f"PCA降维后保留信息量: {explained_var:.2f}%")
             else:
                 # 预测模式：使用已有PCA模型转换
-                 if self.pca_model is None:
+                if self.pca_model is None:
                     logger.warning("找不到PCA模型，跳过降维")
                     return df_processed
-                 pca_result = self.pca_model.transform(df_processed[numeric_cols])
+                pca_result = self.pca_model.transform(df_processed[numeric_cols])
 
             # 创建PCA结果DataFrame
             pca_columns = [f'pca_component_{i + 1}' for i in range(self.n_components)]
@@ -520,7 +520,7 @@ if __name__ == "__main__":
     )
 
     # 初始化数据处理器
-    data_path = "C:\\Users\\17380\\DDoS_dataset.csv"
+    data_path = "C:\\Users\\17380\\final_train.csv"
     processor = DataProcessor(data_path=data_path)
 
     # 执行数据处理流水线

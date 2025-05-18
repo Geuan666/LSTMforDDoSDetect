@@ -20,9 +20,15 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 logger = logging.getLogger(__name__)
 
 # 定义类别名称（只使用英文）
-CLASS_NAMES = ["BENIGN", "LDAP", "MSSQL", "NetBIOS", "Portmap", "Syn", "UDP", "UDPLag"]
-CLASS_MAP = {0: "BENIGN", 1: "LDAP", 2: "MSSQL", 3: "NetBIOS",
-             4: "Portmap", 5: "Syn", 6: "UDP", 7: "UDPLag"}
+# 根据最新的数据集标签映射更新
+CLASS_NAMES = ["BENIGN", "DrDoS_DNS", "DrDoS_LDAP", "DrDoS_MSSQL", "DrDoS_NTP",
+               "DrDoS_NetBIOS", "DrDoS_SNMP", "DrDoS_SSDP", "DrDoS_UDP", "LDAP",
+               "MSSQL", "NetBIOS", "Portmap", "Syn", "TFTP", "UDP", "UDP-lag"]
+
+CLASS_MAP = {0: "BENIGN", 1: "DrDoS_DNS", 2: "DrDoS_LDAP", 3: "DrDoS_MSSQL",
+             4: "DrDoS_NTP", 5: "DrDoS_NetBIOS", 6: "DrDoS_SNMP", 7: "DrDoS_SSDP",
+             8: "DrDoS_UDP", 9: "LDAP", 10: "MSSQL", 11: "NetBIOS",
+             12: "Portmap", 13: "Syn", 14: "TFTP", 15: "UDP", 16: "UDP-lag"}
 
 
 def evaluate_model(model: torch.nn.Module,
@@ -176,56 +182,6 @@ def plot_training_history(history: Dict[str, List],
     plt.close()
 
 
-def visualize_attention_weights(model: torch.nn.Module,
-                                input_data: torch.Tensor,
-                                target: int,
-                                device: torch.device,
-                                figsize: Tuple[int, int] = (10, 8),
-                                save_path: Optional[str] = None) -> None:
-    """
-    可视化样本的注意力权重
-
-    参数:
-        model: 带有注意力机制的模型
-        input_data: 输入张量（单个样本）[1, seq_len, input_size]
-        target: 样本的真实标签
-        device: 运行模型的设备
-        figsize: 图像大小
-        save_path: 保存图像的路径，如果为None，则显示图像
-    """
-    model.eval()
-    input_data = input_data.to(device)
-
-    # 获取模型预测和注意力权重
-    with torch.no_grad():
-        output, attention_weights = model(input_data, return_attention=True)
-
-    # 获取预测
-    _, predicted = output.max(1)
-    predicted = predicted.item()
-
-    # 将注意力权重转换为numpy
-    attention = attention_weights[0].cpu().numpy()  # [seq_len, seq_len]
-
-    # 绘制注意力权重
-    plt.figure(figsize=figsize)
-    sns.heatmap(attention, cmap='viridis')
-    plt.title(f'Attention Weights - True: {CLASS_MAP[target]}, Pred: {CLASS_MAP[predicted]}',
-              fontsize=16)
-    plt.xlabel('Feature Position', fontsize=14)
-    plt.ylabel('Feature Position', fontsize=14)
-    plt.tight_layout()
-
-    # 保存或显示
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info(f"注意力权重可视化已保存至 {save_path}")
-    else:
-        plt.show()
-
-    plt.close()
-
-
 def plot_roc_curves(y_true: np.ndarray,
                     y_score: np.ndarray,
                     class_names: List[str] = CLASS_NAMES,
@@ -347,49 +303,6 @@ def export_model_onnx(model: torch.nn.Module,
     onnx.checker.check_model(onnx_model)
     logger.info("ONNX模型验证通过。")
 
-
-# def create_inference_pipeline(onnx_model_path: str):
-#     """
-#     使用ONNX模型创建推理管道
-#
-#     参数:
-#         onnx_model_path: ONNX模型文件的路径
-#
-#     返回:
-#         inference_func: 接收输入张量并返回预测的推理函数
-#     """
-#      #创建ONNX Runtime会话
-#     session = ort.InferenceSession(onnx_model_path)
-
-    # def inference_func(input_data):
-    #     """
-    #     对输入数据进行推理
-    #
-    #     参数:
-    #         input_data: 形状为[batch_size, seq_len, input_size]的numpy数组
-    #
-    #     返回:
-    #         predictions: 预测的类别
-    #         probabilities: 类别概率
-    #     """
-    #     # 获取输入名称
-    #     input_name = session.get_inputs()[0].name
-    #
-    #     # 运行推理
-    #     results = session.run(None, {input_name: input_data})
-    #
-    #     # 获取逻辑值
-    #     logits = results[0]
-    #
-    #     # 转换为概率和预测
-    #     probabilities = softmax(logits, axis=1)
-    #     predictions = np.argmax(probabilities, axis=1)
-    #
-    #     return predictions, probabilities
-    #
-    # return inference_func
-
-
 def softmax(x, axis=None):
     """
     为x中的每组分数计算softmax值。
@@ -404,7 +317,6 @@ def softmax(x, axis=None):
     x_max = np.max(x, axis=axis, keepdims=True)
     e_x = np.exp(x - x_max)
     return e_x / np.sum(e_x, axis=axis, keepdims=True)
-
 
 def predict_batch(model: torch.nn.Module,
                   data_loader: torch.utils.data.DataLoader,

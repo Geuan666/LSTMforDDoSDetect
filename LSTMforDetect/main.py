@@ -24,8 +24,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 定义类别映射
-CLASS_MAP = {0: "BENIGN", 1: "LDAP", 2: "MSSQL", 3: "NetBIOS",
-             4: "Portmap", 5: "Syn", 6: "UDP", 7: "UDPLag"}
+CLASS_MAP = {0: "BENIGN", 1: "DrDoS_DNS", 2: "DrDoS_LDAP", 3: "DrDoS_MSSQL",
+             4: "DrDoS_NTP", 5: "DrDoS_NetBIOS", 6: "DrDoS_SNMP", 7: "DrDoS_SSDP",
+             8: "DrDoS_UDP", 9: "LDAP", 10: "MSSQL", 11: "NetBIOS",
+             12: "Portmap", 13: "Syn", 14: "TFTP", 15: "UDP", 16: "UDP-lag"}
 CLASS_NAMES = list(CLASS_MAP.values())
 
 
@@ -80,7 +82,7 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
     # 初始化模型
     logger.info("初始化模型...")
     input_size = 1  # 根据数据集: 样本特征形状为 [20, 1]
-    num_classes = 8  # 根据标签映射
+    num_classes = 17  # 根据标签映射
 
     model = DDoSDetector(
         input_size=input_size,
@@ -181,8 +183,8 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
 def main():
     """运行训练和评估的主函数"""
     # 设置路径
-    train_data_path = "C:\\Users\\17380\\DDoSDataset\\train_dataset.csv"  # 替换为您的训练数据路径
-    val_data_path = "C:\\Users\\17380\\DDoSDataset\\test_dataset.csv"  # 替换为您的验证数据路径
+    train_data_path = "C:\\Users\\17380\\final_train.csv"  # 替换为您的训练数据路径
+    val_data_path = "C:\\Users\\17380\\final_test.csv"  # 替换为您的验证数据路径
     output_dir = "./outputs"
 
     # 训练和评估模型
