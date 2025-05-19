@@ -5,12 +5,14 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Union, Optional, Any
-from sklearn.preprocessing import RobustScaler, OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 import pickle
 import warnings
 import torch
 from sklearn.decomposition import PCA
 from torch.utils.data import Dataset, DataLoader
+import joblib
+import json
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
@@ -21,7 +23,7 @@ class DataProcessor:
     数据处理类，负责加载、清洗和特征工程
     """
 
-    def __init__(self, data_path: str, n_workers: int = 4, n_components: int = 20):
+    def __init__(self, data_path: str, n_workers: int = 4, n_components: int = 25):
         """
         初始化数据处理器
         Args:
@@ -206,16 +208,14 @@ class DataProcessor:
         for col in cat_cols:
             if col != label_col:  # 不处理标签列
                 df_clean[col] = df_clean[col].fillna(df_clean[col].mode()[0])
-
         # 3. 异常值处理（使用IQR方法）
         for col in numeric_cols:
             if col != label_col:  # 不处理标签列
                 Q1 = df_clean[col].quantile(0.25)
                 Q3 = df_clean[col].quantile(0.75)
                 IQR = Q3 - Q1
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-
+                lower_bound = Q1 - 3 * IQR
+                upper_bound = Q3 + 3 * IQR
                 # 将异常值限制在边界范围内
                 df_clean[col] = df_clean[col].clip(lower_bound, upper_bound)
 
@@ -223,29 +223,19 @@ class DataProcessor:
         return df_clean
 
     def preprocess_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
-        """特征预处理：对数转换、独热编码、标准化"""
-        logger.info("开始特征预处理")
+        """特征预处理：独热编码、标准化、归一化、PCA降维"""
+        import joblib
+        import json
+        import os
 
+        logger.info("开始特征预处理")
         df_processed = df.copy()
 
-        # 1. 对长尾分布特征进行对数转换: X' = log(1 + X)
-        for base_col in self.log_transform_features_base:
-            actual_col = self.get_actual_column_name(base_col)
-            if actual_col and actual_col in df_processed.columns:
-                min_val = df_processed[actual_col].min()
-                if min_val < 0:
-                    df_processed[actual_col] = df_processed[actual_col] - min_val + 1
-                df_processed[actual_col] = np.log1p(df_processed[actual_col])
-
-        # 2. 处理类别特征（独热编码）
+        # ========== Step 1: 处理类别特征（独热编码） ==========
         for base_col in self.categorical_features_base:
             actual_col = self.get_actual_column_name(base_col)
             if actual_col and actual_col in df_processed.columns:
-
-                # 检查是否已经进行过独热编码
-                already_encoded = any(
-                    col.startswith(f"{base_col}_") for col in df_processed.columns
-                )
+                already_encoded = any(col.startswith(f"{base_col}_") for col in df_processed.columns)
                 if already_encoded:
                     logger.info(f"检测到特征 {base_col} 已经完成独热编码，跳过")
                     continue
@@ -267,15 +257,12 @@ class DataProcessor:
                 df_processed = df_processed.drop(actual_col, axis=1)
                 df_processed = pd.concat([df_processed, encoded_df], axis=1)
 
-        # 3. 标准化数值特征
-        numeric_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
-
-        # 获取标签列
+        # ========== Step 2: 获取标签列 ==========
         label_col = None
         for possible_label in ['Label', 'label']:
-            possible_col = self.get_actual_column_name(possible_label)
-            if possible_col and possible_col in df_processed.columns:
-                label_col = possible_col
+            actual_col = self.get_actual_column_name(possible_label)
+            if actual_col and actual_col in df_processed.columns:
+                label_col = actual_col
                 break
 
         if not label_col:
@@ -285,42 +272,62 @@ class DataProcessor:
                     logger.info(f"使用替代标签列: {col}")
                     break
 
-        # 4. PCA降维
-        # 获取所有数值特征列（排除标签列）
+        # ========== Step 3: 数值特征归一化 ==========
         numeric_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
         if label_col and label_col in numeric_cols:
             numeric_cols.remove(label_col)
-        if numeric_cols:
-            if fit:
-                # 训练模式：拟合PCA模型
-                logger.info(f"执行PCA降维: 从 {len(numeric_cols)} 维降至 {self.n_components} 维")
-                self.pca_model = PCA(n_components=self.n_components)
-                pca_result = self.pca_model.fit_transform(df_processed[numeric_cols])
-                explained_var = sum(self.pca_model.explained_variance_ratio_) * 100
-                logger.info(f"PCA降维后保留信息量: {explained_var:.2f}%")
-            else:
-                # 预测模式：使用已有PCA模型转换
-                if self.pca_model is None:
-                    logger.warning("找不到PCA模型，跳过降维")
-                    return df_processed
-                pca_result = self.pca_model.transform(df_processed[numeric_cols])
 
-            # 创建PCA结果DataFrame
-            pca_columns = [f'pca_component_{i + 1}' for i in range(self.n_components)]
-            pca_df = pd.DataFrame(pca_result, columns=pca_columns, index=df_processed.index)
+        os.makedirs('models', exist_ok=True)  # 创建模型目录
 
-            # 保留标签列和PCA结果
-            if label_col:
-                # 如果有标签列，保留标签和PCA结果
-                result_df = pd.concat([pca_df, df_processed[[label_col]]], axis=1)
-            else:
-                # 如果没有标签列，只保留PCA结果
-             result_df = pca_df
-            logger.info(f"PCA降维完成，降维后特征数: {self.n_components}")
-            return result_df
+        if fit:
+            self.numeric_feature_order = numeric_cols
+            self.minmax_scaler = MinMaxScaler()
+            df_processed[numeric_cols] = self.minmax_scaler.fit_transform(df_processed[numeric_cols])
 
-        logger.info("特征预处理完成")
-        return df_processed
+            # 保存 scaler 和特征顺序
+            joblib.dump(self.minmax_scaler, 'models/minmax_scaler.pkl')
+            with open('models/numeric_feature_order.json', 'w') as f:
+                json.dump(self.numeric_feature_order, f)
+        else:
+            try:
+                self.minmax_scaler = joblib.load('models/minmax_scaler.pkl')
+                with open('models/numeric_feature_order.json', 'r') as f:
+                    self.numeric_feature_order = json.load(f)
+            except Exception as e:
+                raise RuntimeError("验证阶段缺少 scaler 或特征顺序，并且加载失败") from e
+
+            numeric_cols = self.numeric_feature_order
+            df_processed[numeric_cols] = self.minmax_scaler.transform(df_processed[numeric_cols])
+
+        # ========== Step 4: PCA 降维 ==========
+        if fit:
+            logger.info(f"执行 PCA 降维: 从 {len(numeric_cols)} 维降至 {self.n_components} 维")
+            self.pca_model = PCA(n_components=self.n_components)
+            pca_result = self.pca_model.fit_transform(df_processed[numeric_cols])
+            explained_var = sum(self.pca_model.explained_variance_ratio_) * 100
+            logger.info(f"PCA降维后保留信息量: {explained_var:.2f}%")
+
+            # 保存 PCA 模型
+            joblib.dump(self.pca_model, 'models/pca_model.pkl')
+        else:
+            try:
+                self.pca_model = joblib.load('models/pca_model.pkl')
+            except Exception as e:
+                raise RuntimeError("验证阶段缺少 PCA 模型，并且加载失败") from e
+
+            pca_result = self.pca_model.transform(df_processed[numeric_cols])
+
+        # ========== Step 5: 构造结果 ==========
+        pca_columns = [f'pca_component_{i + 1}' for i in range(self.n_components)]
+        pca_df = pd.DataFrame(pca_result, columns=pca_columns, index=df_processed.index)
+
+        if label_col:
+            result_df = pd.concat([pca_df, df_processed[[label_col]]], axis=1)
+        else:
+            result_df = pca_df
+
+        logger.info(f"PCA降维完成，最终特征维数: {result_df.shape[1]}")
+        return result_df
 
     def process_data_pipeline(self, train: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """完整数据处理流水线"""
@@ -432,15 +439,30 @@ class DDoSDataset(Dataset):
         # 初始化处理器
         self.processor = DataProcessor(
             data_path=data_path,
-            n_workers=1  # 单进程处理
+            n_workers=1
         )
 
-        # 如果有预处理器路径且不是训练模式，加载预处理器
-        if preprocessor_path and not train:
+        # 如果是训练模式且提供了预处理器路径，在处理后保存预处理器
+        if train and preprocessor_path:
+            self.features, self.labels = self.processor.process_data_pipeline(train=True)
+            logger.info(f"保存预处理器到: {preprocessor_path}")
+            # 确保目录存在
+            os.makedirs(os.path.dirname(preprocessor_path), exist_ok=True)
+            self.processor.save_preprocessors(preprocessor_path)
+            logger.info("预处理器保存成功")
+        # 如果是预测模式且提供了预处理器路径，先加载预处理器再处理数据
+        elif not train and preprocessor_path:
+            if not os.path.exists(preprocessor_path):
+                raise FileNotFoundError(f"预处理器文件不存在: {preprocessor_path}")
+            logger.info(f"加载预处理器从: {preprocessor_path}")
             self.processor.load_preprocessors(preprocessor_path)
-
-        # 处理数据
-        self.features, self.labels = self.processor.process_data_pipeline(train=train)
+            logger.info("预处理器加载成功")
+            self.features, self.labels = self.processor.process_data_pipeline(train=False)
+        else:
+            # 无预处理器路径的情况
+            self.features, self.labels = self.processor.process_data_pipeline(train=train)
+            if train:
+                logger.warning("训练模式未提供预处理器保存路径，将无法在预测时使用一致的预处理")
 
         # 确保数据不为空
         if len(self.features) == 0 or len(self.labels) == 0:
@@ -520,7 +542,7 @@ if __name__ == "__main__":
     )
 
     # 初始化数据处理器
-    data_path = "C:\\Users\\17380\\final_train.csv"
+    data_path = r"C:\Users\17380\processed_dataset_modified.csv"
     processor = DataProcessor(data_path=data_path)
 
     # 执行数据处理流水线

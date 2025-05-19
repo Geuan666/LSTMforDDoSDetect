@@ -179,7 +179,7 @@ class Trainer:
 
         return avg_loss, accuracy
 
-    def train(self, epochs: int, early_stopping_patience: int = 10) -> Dict:
+    def train(self, epochs: int, early_stopping_patience: int = 5) -> Dict:
         """
         训练模型多个epochs
         参数:

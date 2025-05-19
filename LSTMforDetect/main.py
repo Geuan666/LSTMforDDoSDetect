@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 # 导入模块
 from data import DDoSDataset, create_dataloader
-from model import DDoSDetector
+from model import BiLSTMDetector
 from trainer import Trainer
 import utils
 
@@ -24,33 +24,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 定义类别映射
-CLASS_MAP = {0: "BENIGN", 1: "DrDoS_DNS", 2: "DrDoS_LDAP", 3: "DrDoS_MSSQL",
-             4: "DrDoS_NTP", 5: "DrDoS_NetBIOS", 6: "DrDoS_SNMP", 7: "DrDoS_SSDP",
-             8: "DrDoS_UDP", 9: "LDAP", 10: "MSSQL", 11: "NetBIOS",
-             12: "Portmap", 13: "Syn", 14: "TFTP", 15: "UDP", 16: "UDP-lag"}
+CLASS_MAP =  {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
 CLASS_NAMES = list(CLASS_MAP.values())
 
 
 def train_model(train_data_path, val_data_path, output_dir="./outputs",
                 batch_size=256, epochs=10, learning_rate=0.001,
                 weight_decay=0.001, gradient_clip=1.0):
-    """
-    训练DDoS检测模型
-
-    参数:
-        train_data_path: 训练数据CSV路径
-        val_data_path: 验证数据CSV路径
-        output_dir: 保存输出的目录
-        batch_size: 训练的批次大小
-        epochs: 训练轮数
-        learning_rate: 优化器的学习率
-        weight_decay: L2正则化系数
-        gradient_clip: 梯度裁剪阈值
-    """
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # 设置预处理器保存路径
+    preprocessor_path = os.path.join(output_dir, "preprocessor.pkl")
 
     # 设置设备
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,12 +46,20 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
     # 创建数据集和数据加载器
     logger.info("加载数据集...")
     try:
-        train_dataset = DDoSDataset(data_path=train_data_path, train=True)
+        # 训练数据集 - 将拟合并保存预处理器
+        train_dataset = DDoSDataset(
+            data_path=train_data_path,
+            preprocessor_path=preprocessor_path,  # 保存预处理器
+            train=True
+        )
         logger.info(f"训练数据集大小: {len(train_dataset)}")
 
-        val_dataset = DDoSDataset(data_path=val_data_path,
-                                  preprocessor_path=None,  # 使用None进行独立处理
-                                  train=False)
+        # 验证数据集 - 使用训练集拟合的预处理器
+        val_dataset = DDoSDataset(
+            data_path=val_data_path,
+            preprocessor_path=preprocessor_path,  # 使用保存的预处理器
+            train=False  # 验证模式
+        )
         logger.info(f"验证数据集大小: {len(val_dataset)}")
 
         # 获取样本形状
@@ -82,14 +77,15 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
     # 初始化模型
     logger.info("初始化模型...")
     input_size = 1  # 根据数据集: 样本特征形状为 [20, 1]
-    num_classes = 17  # 根据标签映射
+    num_classes = 13  # 根据标签映射
 
-    model = DDoSDetector(
+
+    model = BiLSTMDetector(
         input_size=input_size,
         hidden_size=128,
         num_layers=2,
         num_classes=num_classes,
-        dropout_rate=0.3
+        dropout_rate=0.5
     )
 
     # 初始化训练器
@@ -162,14 +158,6 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
     val_sample = val_sample.unsqueeze(0)
     val_label = val_label.item()
 
-    utils.visualize_attention_weights(
-        model=model,
-        input_data=val_sample,
-        target=val_label,
-        device=device,
-        save_path=os.path.join(output_dir, "attention_weights.png")
-    )
-
     # 将模型导出为ONNX用于部署
     logger.info("导出模型为ONNX格式...")
     sample_input = torch.randn(1, 20, 1).to(device)  # 批次大小1，序列长度20，特征维度1
@@ -183,8 +171,8 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
 def main():
     """运行训练和评估的主函数"""
     # 设置路径
-    train_data_path = "C:\\Users\\17380\\final_train.csv"  # 替换为您的训练数据路径
-    val_data_path = "C:\\Users\\17380\\final_test.csv"  # 替换为您的验证数据路径
+    train_data_path = "C:\\Users\\17380\\train_dataset.csv"  # 替换为您的训练数据路径
+    val_data_path = "C:\\Users\\17380\\test_dataset.csv"  # 替换为您的验证数据路径
     output_dir = "./outputs"
 
     # 训练和评估模型
@@ -192,8 +180,8 @@ def main():
         train_data_path=train_data_path,
         val_data_path=val_data_path,
         output_dir=output_dir,
-        batch_size=256,
-        epochs=10,
+        batch_size=128,
+        epochs=8,
         learning_rate=0.001,
         weight_decay=0.001,
         gradient_clip=1.0
