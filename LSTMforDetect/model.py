@@ -12,7 +12,7 @@ class BiLSTMDetector(nn.Module):
     用于DDoS攻击检测的简化LSTM模型
     """
 
-    def __init__(self, input_size=1, hidden_size=256, num_layers=2, num_classes=13, dropout_rate=0.3):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=2, num_classes=13, dropout_rate=0.3):
         """
         初始化DDoS检测模型
         参数:
@@ -70,7 +70,7 @@ class BiLSTMDetector(nn.Module):
                     nn.init.xavier_uniform_(param)
                 else:
                     # 1维权重(如batch_norm的weight): 使用常数1初始化
-                    nn.init.constant_(param, 0.0894)
+                    nn.init.constant_(param, 1)
             elif 'bias' in name:
                 # 将偏置初始化为零
                 nn.init.zeros_(param)

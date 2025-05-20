@@ -54,10 +54,8 @@ class DataProcessor:
             'BwdIATMean', 'BwdIATStd', 'BwdIATMax', 'BwdIATMin', 'FwdPSHFlags',
             'BwdPSHFlags', 'FwdURGFlags', 'BwdURGFlags', 'FwdHeaderLength',
             'BwdHeaderLength', 'FwdPackets/s', 'BwdPackets/s', 'Init_Win_bytes_forward',
-            'Init_Win_bytes_backward', 'min_seg_size_forward', 'SubflowFwdBytes',
-            'SubflowBwdBytes', 'AveragePacketSize', 'AvgFwdSegmentSize',
-            'AvgBwdSegmentSize', 'ActiveMean', 'ActiveMin', 'ActiveMax', 'ActiveStd',
-            'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd', 'Timestamp',
+            'Init_Win_bytes_backward', 'AveragePacketSize', 'ActiveMean', 'ActiveMin', 'ActiveMax', 'ActiveStd',
+            'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd',
         ]
 
         # 需要进行对数转换的特征
