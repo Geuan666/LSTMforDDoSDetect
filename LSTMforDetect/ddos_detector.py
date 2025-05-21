@@ -422,6 +422,65 @@ def preprocess_flow_features(flow_features, preprocessor_path):
     # 转换为DataFrame
     df = pd.DataFrame(flow_features)
 
+    # 创建无空格列名到有空格列名的映射
+    column_mapping = {
+        'Protocol': 'Protocol',  # 这个不变
+        'FlowDuration': 'Flow Duration',
+        'TotalFwdPackets': 'Total Fwd Packets',
+        'TotalBackwardPackets': 'Total Backward Packets',
+        'FlowBytes/s': 'Flow Bytes/s',
+        'FlowPackets/s': 'Flow Packets/s',
+        'FwdPacketLengthMax': 'Fwd Packet Length Max',
+        'FwdPacketLengthMin': 'Fwd Packet Length Min',
+        'FwdPacketLengthMean': 'Fwd Packet Length Mean',
+        'FwdPacketLengthStd': 'Fwd Packet Length Std',
+        'BwdPacketLengthMax': 'Bwd Packet Length Max',
+        'BwdPacketLengthMin': 'Bwd Packet Length Min',
+        'BwdPacketLengthMean': 'Bwd Packet Length Mean',
+        'BwdPacketLengthStd': 'Bwd Packet Length Std',
+        'PacketLengthVariance': 'Packet Length Variance',
+        'FlowIATMin': 'Flow IAT Min',
+        'FlowIATMax': 'Flow IAT Max',
+        'FlowIATMean': 'Flow IAT Mean',
+        'FlowIATStd': 'Flow IAT Std',
+        'FwdIATMean': 'Fwd IAT Mean',
+        'FwdIATStd': 'Fwd IAT Std',
+        'FwdIATMax': 'Fwd IAT Max',
+        'FwdIATMin': 'Fwd IAT Min',
+        'BwdIATMean': 'Bwd IAT Mean',
+        'BwdIATStd': 'Bwd IAT Std',
+        'BwdIATMax': 'Bwd IAT Max',
+        'BwdIATMin': 'Bwd IAT Min',
+        'FwdPSHFlags': 'Fwd PSH Flags',
+        'BwdPSHFlags': 'Bwd PSH Flags',
+        'FwdURGFlags': 'Fwd URG Flags',
+        'BwdURGFlags': 'Bwd URG Flags',
+        'FwdHeaderLength': 'Fwd Header Length',
+        'BwdHeaderLength': 'Bwd Header Length',
+        'FwdPackets/s': 'Fwd Packets/s',
+        'BwdPackets/s': 'Bwd Packets/s',
+        'Init_Win_bytes_forward': 'Init_Win_bytes_forward',  # 这些可能在原始数据中没有空格
+        'Init_Win_bytes_backward': 'Init_Win_bytes_backward',
+        'min_seg_size_forward': 'min_seg_size_forward',
+        'SubflowFwdBytes': 'Subflow Fwd Bytes',
+        'SubflowBwdBytes': 'Subflow Bwd Bytes',
+        'AveragePacketSize': 'Average Packet Size',
+        'AvgFwdSegmentSize': 'Avg Fwd Segment Size',
+        'AvgBwdSegmentSize': 'Avg Bwd Segment Size',
+        'ActiveMean': 'Active Mean',
+        'ActiveStd': 'Active Std',
+        'ActiveMax': 'Active Max',
+        'ActiveMin': 'Active Min',
+        'IdleMean': 'Idle Mean',
+        'IdleStd': 'Idle Std',
+        'IdleMax': 'Idle Max',
+        'IdleMin': 'Idle Min',
+        'Timestamp': 'Timestamp'  # 这个不变
+    }
+
+    # 重命名DataFrame的列名
+    df.rename(columns=column_mapping, inplace=True)
+
     # 加载预处理器
     try:
         with open(preprocessor_path, 'rb') as f:
@@ -442,19 +501,19 @@ def preprocess_flow_features(flow_features, preprocessor_path):
     # 准备特征 - 必须与训练时完全一致
     # 1. 检查base_features中的特征是否都存在
     base_features = [
-        'Protocol', 'FlowDuration', 'TotalFwdPackets', 'TotalBackwardPackets',
-        'FlowBytes/s', 'FlowPackets/s', 'FwdPacketLengthMax', 'FwdPacketLengthMin',
-        'FwdPacketLengthMean', 'FwdPacketLengthStd', 'BwdPacketLengthMax',
-        'BwdPacketLengthMin', 'BwdPacketLengthMean', 'BwdPacketLengthStd',
-        'PacketLengthVariance', 'FlowIATMin', 'FlowIATMax', 'FlowIATMean',
-        'FlowIATStd', 'FwdIATMean', 'FwdIATStd', 'FwdIATMax', 'FwdIATMin',
-        'BwdIATMean', 'BwdIATStd', 'BwdIATMax', 'BwdIATMin', 'FwdPSHFlags',
-        'BwdPSHFlags', 'FwdURGFlags', 'BwdURGFlags', 'FwdHeaderLength',
-        'BwdHeaderLength', 'FwdPackets/s', 'BwdPackets/s', 'Init_Win_bytes_forward',
-        'Init_Win_bytes_backward', 'min_seg_size_forward', 'SubflowFwdBytes',
-        'SubflowBwdBytes', 'AveragePacketSize', 'AvgFwdSegmentSize',
-        'AvgBwdSegmentSize', 'ActiveMean', 'ActiveMin', 'ActiveMax', 'ActiveStd',
-        'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd', 'Timestamp',
+        'Protocol', 'Flow Duration', 'Total Fwd Packets', 'Total Backward Packets',
+        'Flow Bytes/s', 'Flow Packets/s', 'Fwd Packet Length Max', 'Fwd Packet Length Min',
+        'Fwd Packet Length Mean', 'Fwd Packet Length Std', 'Bwd Packet Length Max',
+        'Bwd Packet Length Min', 'Bwd Packet Length Mean', 'Bwd Packet Length Std',
+        'Packet Length Variance', 'Flow IAT Min', 'Flow IAT Max', 'Flow IAT Mean',
+        'Flow IAT Std', 'Fwd IAT Mean', 'Fwd IAT Std', 'Fwd IAT Max', 'Fwd IAT Min',
+        'Bwd IAT Mean', 'Bwd IAT Std', 'Bwd IAT Max', 'Bwd IAT Min', 'Fwd PSH Flags',
+        'Bwd PSH Flags', 'Fwd URG Flags', 'Bwd URG Flags', 'Fwd Header Length',
+        'Bwd Header Length', 'Fwd Packets/s', 'Bwd Packets/s', 'Init_Win_bytes_forward',
+        'Init_Win_bytes_backward', 'min_seg_size_forward', 'Subflow Fwd Bytes',
+        'Subflow Bwd Bytes', 'Average Packet Size', 'Avg Fwd Segment Size',
+        'Avg Bwd Segment Size', 'Active Mean', 'Active Min', 'Active Max', 'Active Std',
+        'Idle Mean', 'Idle Min', 'Idle Max', 'Idle Std', 'Timestamp',
     ]
 
     missing_features = [f for f in base_features if f not in df.columns]
@@ -563,6 +622,7 @@ class BiLSTMDetector(torch.nn.Module):
         output = self.fc2(x)  # [batch_size, num_classes]
 
         return output
+
 
 # SVMModel类的实现
 class SVMModel:
@@ -726,6 +786,7 @@ class SVMCascadeModel:
 
         return final_pred, base_pred, probs.cpu().numpy()
 
+
 # SVM级联模型加载函数（如果您的项目使用了级联模型）
 def load_cascade_model(lstm_model_path, svm_models_dir, confusion_pairs=None):
     """加载LSTM模型和SVM级联分类器"""
@@ -866,7 +927,7 @@ def main():
     parser.add_argument('--server_ip', required=True, help='服务器IP地址')
     parser.add_argument('--model', default='./outputs/checkpoints/best_model.pth', help='模型路径')
     parser.add_argument('--preprocessor', default='./outputs/preprocessor.pkl', help='预处理器路径')
-    parser.add_argument('--svm_dir', default='./outputs/svm_model', help='SVM模型目录（如果使用级联模型）')
+    parser.add_argument('--svm_dir', default='./outputs/svm_models', help='SVM模型目录（如果使用级联模型）')
     parser.add_argument('--output', default='predictions.csv', help='输出CSV文件路径')
 
     args = parser.parse_args()
