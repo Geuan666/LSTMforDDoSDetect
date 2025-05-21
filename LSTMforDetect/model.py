@@ -1,15 +1,18 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import logging
+import numpy as np
+from sklearn.svm import SVC
+import os
+import pickle
 
 logger = logging.getLogger(__name__)
 
 
 class BiLSTMDetector(nn.Module):
     """
-    用于DDoS攻击检测的简化LSTM模型
+    用于DDoS攻击检测的双向LSTM模型
     """
 
     def __init__(self, input_size=1, hidden_size=64, num_layers=2, num_classes=13, dropout_rate=0.3):
@@ -54,7 +57,7 @@ class BiLSTMDetector(nn.Module):
         # 初始化权重
         self._init_weights()
 
-        logger.info(f"初始化SimpleLSTMDetector: input_size={input_size}, "
+        logger.info(f"初始化BiLSTMDetector: input_size={input_size}, "
                     f"hidden_size={hidden_size}, num_layers={num_layers}, "
                     f"num_classes={num_classes}, dropout_rate={dropout_rate}")
 
@@ -69,7 +72,7 @@ class BiLSTMDetector(nn.Module):
                     # 线性层权重: 使用xavier初始化
                     nn.init.xavier_uniform_(param)
                 else:
-                    # 1维权重(如batch_norm的weight): 使用常数1初始化
+                    # 1维权重(如batch_norm的weight): 使用常数初始化
                     nn.init.constant_(param, 0.0894)
             elif 'bias' in name:
                 # 将偏置初始化为零
@@ -90,7 +93,6 @@ class BiLSTMDetector(nn.Module):
         lstm_out, (final_hidden, _) = self.lstm(x)
         # lstm_out: [batch_size, seq_len, hidden_size*2] (因为是双向LSTM)
 
-        # 获取最后一层、最后一个时间步的隐藏状态
         # 对于双向LSTM，需要连接两个方向的最终隐藏状态
         # final_hidden的形状: [num_layers*2, batch_size, hidden_size]
 
@@ -117,3 +119,163 @@ class BiLSTMDetector(nn.Module):
         output = self.fc2(x)  # [batch_size, num_classes]
 
         return output
+
+
+class SVMModel:
+    """SVM分类器模型类"""
+
+    def __init__(self, class1, class2, kernel='rbf', C=1.0, gamma='scale', probability=True):
+        """
+        初始化SVM模型
+
+        参数:
+            class1: 第一个类别的索引
+            class2: 第二个类别的索引
+            kernel: 核函数类型
+            C: 正则化参数
+            gamma: 核系数
+            probability: 是否启用概率估计
+        """
+        self.class1 = class1
+        self.class2 = class2
+        self.model = SVC(
+            kernel=kernel,
+            C=C,
+            gamma=gamma,
+            probability=probability,
+            class_weight='balanced'
+        )
+
+    def fit(self, X, y):
+        """
+        训练SVM模型
+
+        参数:
+            X: 特征矩阵
+            y: 标签向量（二进制，0表示class1，1表示class2）
+        """
+        return self.model.fit(X, y)
+
+    def predict(self, X):
+        """
+        预测样本类别
+
+        参数:
+            X: 特征矩阵
+
+        返回:
+            预测的类别: 返回原始类别索引（class1或class2）
+        """
+        binary_pred = self.model.predict(X)
+        # 将二元预测转换回原始类别
+        return np.where(binary_pred == 0, self.class1, self.class2)
+
+    def save(self, path):
+        """
+        保存模型
+
+        参数:
+            path: 保存路径
+        """
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, path):
+        """
+        加载模型
+
+        参数:
+            path: 模型路径
+
+        返回:
+            加载的SVM模型实例
+        """
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+
+
+class SVMCascadeModel:
+    """
+    SVM级联模型：结合BiLSTM基础分类器和SVM二分类器
+    """
+
+    def __init__(self, base_model, confusion_pairs=None, confidence_threshold=0.95):
+        """
+        初始化级联模型
+        参数:
+            base_model: 基础BiLSTM模型
+            confusion_pairs: 混淆类别对列表，如 [(11,12), (5,7), (2,8), (9,10)]
+            confidence_threshold: 不触发二级分类器的置信度阈值
+        """
+        self.base_model = base_model
+        self.confusion_pairs = confusion_pairs or [(11, 12), (5, 7), (2, 8), (9, 10)]
+        self.confidence_threshold = confidence_threshold
+        self.svm_models = {}
+
+    def load_svm_models(self, model_dir):
+        """
+        加载SVM二分类器
+        参数:
+            model_dir: SVM模型目录
+        """
+        for class1, class2 in self.confusion_pairs:
+            model_path = os.path.join(model_dir, f"svm_model_{class1}_{class2}.pkl")
+            if os.path.exists(model_path):
+                self.svm_models[(class1, class2)] = SVMModel.load(model_path)
+                logger.info(f"已加载SVM分类器: {class1} vs {class2}")
+            else:
+                logger.warning(f"找不到SVM分类器: {class1} vs {class2}")
+
+    def predict(self, inputs, device=None):
+        """
+        使用级联模型预测
+
+        参数:
+            inputs: BiLSTM模型的输入数据，形状为[batch_size, feature_dim, 1]
+            device: 计算设备
+
+        返回:
+            final_pred: 最终预测标签
+            base_pred: 基础模型预测
+            probs: 预测概率
+        """
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # 基础BiLSTM模型预测
+        self.base_model.eval()
+        with torch.no_grad():
+            outputs = self.base_model(inputs.to(device))
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            base_pred = outputs.max(1)[1].cpu().numpy()
+            confidence = probs.max(1)[0].cpu().numpy()
+
+        # 如果没有加载SVM分类器，直接返回基础预测
+        if not self.svm_models:
+            return base_pred, base_pred, probs.cpu().numpy()
+
+        # 最终预测结果
+        final_pred = base_pred.copy()
+
+        # 提取PCA降维后的特征（从输入的倒数第二维）
+        pca_features = inputs.squeeze(-1).cpu().numpy()
+
+        # 对每个样本应用SVM二次分类
+        for i, (pred, conf) in enumerate(zip(base_pred, confidence)):
+            # 检查是否是混淆类别对
+            for class1, class2 in self.confusion_pairs:
+                if pred in [class1, class2] and conf < self.confidence_threshold:
+                    # 找到对应的SVM分类器
+                    svm_model = self.svm_models.get((class1, class2))
+                    if svm_model is None:
+                        continue
+
+                    # 获取当前样本的特征
+                    feature = pca_features[i:i + 1]
+
+                    # 预测并更新结果
+                    final_pred[i] = svm_model.predict(feature)[0]
+                    break
+
+        return final_pred, base_pred, probs.cpu().numpy()

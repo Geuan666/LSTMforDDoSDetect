@@ -10,13 +10,17 @@ from torch.utils.data import DataLoader
 import logging
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Union
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.metrics import accuracy_score, classification_report
+from utils import CLASS_NAMES,CLASS_MAP
+from model import SVMModel
 
 logger = logging.getLogger(__name__)
 
 
-class Trainer:
+class LSTMTrainer:
     """
-    DDoS检测模型的训练器类
+    DDoS检测LSTM模型的训练器类
     """
 
     def __init__(
@@ -80,7 +84,7 @@ class Trainer:
             'epochs': []
         }
 
-        logger.info(f"训练器初始化完成，设备: {self.device}, "
+        logger.info(f"LSTM训练器初始化完成，设备: {self.device}, "
                     f"学习率: {learning_rate}, 权重衰减: {weight_decay}, "
                     f"梯度裁剪值: {gradient_clip_val}")
 
@@ -280,3 +284,148 @@ class Trainer:
                     f"验证准确率: {checkpoint['val_acc']:.2f}%")
 
         return checkpoint
+
+
+class SVMTrainer:
+    """
+    SVM模型训练器类
+    """
+
+    def __init__(self, output_dir="./svm_models"):
+        """
+        初始化SVM训练器
+
+        参数:
+            output_dir: 保存模型的目录
+        """
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"SVM训练器初始化完成，输出目录: {output_dir}")
+
+    def train_binary_classifier(self, X, y, class1, class2, test_size=0.2):
+        """
+        训练二分类SVM模型
+
+        参数:
+            X: 特征矩阵 (PCA降维后)
+            y: 标签向量 (可能是字符串或数字)
+            class1: 第一个类别 (数字索引)
+            class2: 第二个类别 (数字索引)
+            test_size: 测试集比例
+
+        返回:
+            best_model: 训练好的SVM模型
+            test_accuracy: 测试集准确率
+        """
+        # 获取类别的字符串名称
+        class1_name = CLASS_NAMES[class1] if class1 < len(CLASS_NAMES) else str(class1)
+        class2_name = CLASS_NAMES[class2] if class2 < len(CLASS_NAMES) else str(class2)
+
+        # 筛选属于这两个类别的样本 - 同时处理字符串标签和数字标签
+        mask = np.zeros(len(y), dtype=bool)
+        for i, label in enumerate(y):
+            if isinstance(label, str) and (label == class1_name or label == class2_name):
+                mask[i] = True
+            elif isinstance(label, (int, np.integer)) and (label == class1 or label == class2):
+                mask[i] = True
+
+        X_subset = X[mask]
+        y_subset = y[mask]
+
+        # 将标签转换为二分类 (0 和 1)
+        y_binary = np.zeros(len(y_subset), dtype=np.int32)
+        for i, label in enumerate(y_subset):
+            if (isinstance(label, str) and label == class2_name) or (
+                    isinstance(label, (int, np.integer)) and label == class2):
+                y_binary[i] = 1
+
+        logger.info(f"类别 {class1_name} ({class1}) 样本数: {sum(y_binary == 0)}")
+        logger.info(f"类别 {class2_name} ({class2}) 样本数: {sum(y_binary == 1)}")
+
+        # 检查样本数量
+        if len(X_subset) < 10 or sum(y_binary == 0) < 5 or sum(y_binary == 1) < 5:
+            logger.error(f"样本不足，无法训练 {class1_name} vs {class2_name} 的分类器")
+            return None, 0.0
+
+        # 分割训练集和测试集
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_subset, y_binary, test_size=test_size, stratify=y_binary, random_state=42
+        )
+
+        # 创建SVM模型
+        base_model = SVMModel(class1=class1, class2=class2)
+
+        # 参数网格搜索
+        param_grid = {
+            'C': [0.1, 1, 10, 100],
+            'gamma': ['scale', 'auto', 0.01, 0.1, 1]
+        }
+
+        grid_search = GridSearchCV(
+            base_model.model,
+            param_grid=param_grid,
+            cv=5,
+            scoring='accuracy',
+            n_jobs=-1
+        )
+
+        # 训练模型
+        logger.info("开始网格搜索SVM最优参数...")
+        grid_search.fit(X_train, y_train)
+
+        # 获取最佳模型
+        best_params = grid_search.best_params_
+        logger.info(f"最优参数: {best_params}")
+
+        # 使用最佳参数创建新模型
+        best_model = SVMModel(
+            class1=class1,
+            class2=class2,
+            kernel='rbf',
+            C=best_params['C'],
+            gamma=best_params['gamma']
+        )
+
+        # 在整个训练集上重新训练
+        best_model.fit(X_train, y_train)
+
+        # 在测试集上评估
+        y_pred_binary = best_model.model.predict(X_test)
+        test_accuracy = accuracy_score(y_test, y_pred_binary)
+
+        logger.info(f"测试集准确率: {test_accuracy:.4f}")
+        logger.info(f"分类报告:\n{classification_report(y_test, y_pred_binary)}")
+
+        # 保存模型
+        model_path = os.path.join(self.output_dir, f"svm_model_{class1}_{class2}.pkl")
+        best_model.save(model_path)
+        logger.info(f"SVM模型已保存至: {model_path}")
+
+        return best_model, test_accuracy
+
+    def train_multiple_classifiers(self, X, y, confusion_pairs=None):
+        """
+        训练多个二分类SVM模型
+
+        参数:
+            X: 特征矩阵
+            y: 标签向量
+            confusion_pairs: 混淆类别对列表，如 [(11,12), (5,7), (2,8), (9,10)]
+
+        返回:
+            results: 包含每个分类器准确率的字典
+        """
+        if confusion_pairs is None:
+            confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10)]
+
+        results = {}
+
+        for class1, class2 in confusion_pairs:
+            class1_name = CLASS_NAMES[class1] if class1 < len(CLASS_NAMES) else f"Class-{class1}"
+            class2_name = CLASS_NAMES[class2] if class2 < len(CLASS_NAMES) else f"Class-{class2}"
+            logger.info(f"训练 {class1_name} ({class1}) vs {class2_name} ({class2}) 分类器")
+            model, accuracy = self.train_binary_classifier(X, y, class1, class2)
+            if model is not None:
+                results[(class1, class2)] = accuracy
+
+        return results

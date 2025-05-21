@@ -1,22 +1,25 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import os
 import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Union, Optional, Any
+from typing import Dict, Tuple, Optional, Any
 from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 import pickle
 import warnings
 import torch
 from sklearn.decomposition import PCA
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 import joblib
 import json
-from utils import CLASS_MAP, CLASS_NAMES  # 如果CLASS_MAP定义在utils.py中
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
+
+# 定义类别映射
+CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8,
+             'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+CLASS_NAMES = list(CLASS_MAP.keys())
 
 
 class DataProcessor:
@@ -44,7 +47,7 @@ class DataProcessor:
         self.scalers = {}
         self.encoders = {}
 
-        # 不带空格版本的特征列表
+        # 不带空格版本的特征列表，使用TimeStamp的目的是防止删除重复值时删除过多，更好的解决方案是重新提取数据集
         self.base_features = [
             'Protocol', 'FlowDuration', 'TotalFwdPackets', 'TotalBackwardPackets',
             'FlowBytes/s', 'FlowPackets/s', 'FwdPacketLengthMax', 'FwdPacketLengthMin',
@@ -61,7 +64,7 @@ class DataProcessor:
             'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd', 'Timestamp',
         ]
 
-        # 需要进行对数转换的特征
+        # 需要进行对数转换的特征,经实验，使用对数转换效果较好
         self.log_transform_features_base = [
             'FlowBytes/s', 'FlowPackets/s', 'FwdPackets/s', 'BwdPackets/s',
             'FlowDuration', 'PacketLengthVariance'
@@ -72,7 +75,7 @@ class DataProcessor:
 
     def normalize_column_names(self, df: pd.DataFrame) -> Dict[str, str]:
         """
-        创建标准化的列名映射，将所有列名无空格版本作为键，原始列名作为值
+        创建标准化的列名映射，将所有列名无空格版本作为键，原始列名作为值，原始数据 列名中存在不确定的前导空格
         """
         column_map = {}
         for col in df.columns:
@@ -138,7 +141,7 @@ class DataProcessor:
 
             logger.info(f"将读取 {len(usecols)} 列: {len(usecols) - 1} 个特征列和 1 个标签列")
 
-            # 分块读取，考虑到文件可能很大(150000行左右)
+            # 分块读取，考虑到文件可能很大，很耗内存
             chunks = None
             try:
                 chunks = pd.read_csv(self.data_path, chunksize=10000, usecols=usecols, on_bad_lines='skip')
@@ -167,7 +170,7 @@ class DataProcessor:
             return pd.DataFrame()
 
     def dropna_in_chunks(self, df, chunk_size=100000):
-        """分块处理NaN值，避免内存问题"""
+        """分块处理NaN值，避免内存不够"""
         chunks = []
         for i in range(0, len(df), chunk_size):
             chunk = df.iloc[i:i + chunk_size].dropna()
@@ -209,13 +212,14 @@ class DataProcessor:
         for col in cat_cols:
             if col != label_col:  # 不处理标签列
                 df_clean[col] = df_clean[col].fillna(df_clean[col].mode()[0])
+
         # 3. 异常值处理（使用IQR方法）
         for col in numeric_cols:
             if col != label_col:  # 不处理标签列
                 Q1 = df_clean[col].quantile(0.25)
                 Q3 = df_clean[col].quantile(0.75)
                 IQR = Q3 - Q1
-                lower_bound = Q1 - 5 * IQR
+                lower_bound = Q1 - 5 * IQR#经实验，取值5，使得有价值的异常仍然保留，即能体现异常，但是又不会因为异常影响运算，且计算较为平稳
                 upper_bound = Q3 + 5 * IQR
                 # 将异常值限制在边界范围内
                 df_clean[col] = df_clean[col].clip(lower_bound, upper_bound)
@@ -223,65 +227,13 @@ class DataProcessor:
         logger.info("数据清洗完成")
         return df_clean
 
-    def extract_pre_pca_data(self, df, numeric_cols):
-        """提取并存储PCA前数据"""
-        # 确保必要的列存在
-        if not numeric_cols:
-            logger.error("没有数值特征列可用于提取")
-            return
-
-        # 存储PCA前的特征数据
-        self.pre_pca_features = df[numeric_cols].values.copy()
-
-        # 获取标签列
-        label_col = None
-        for possible_label in ['Label', 'label']:
-            actual_col = self.get_actual_column_name(possible_label)
-            if actual_col and actual_col in df.columns:
-                label_col = actual_col
-                break
-
-        if not label_col:
-            for col in df.columns:
-                if 'label' in col.lower():
-                    label_col = col
-                    break
-
-        if label_col:
-            self.pre_pca_labels = df[label_col].values.copy()
-        else:
-            logger.warning("无法找到标签列")
-            self.pre_pca_labels = None
-
-    def save_pre_pca_data(self, save_path):
-        """保存PCA前的数据"""
-        if not hasattr(self, 'pre_pca_features') or not hasattr(self, 'pre_pca_labels'):
-            logger.error("没有可用的PCA前数据")
-            return False
-
-        # 保存数据
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-        # 检查我们是否有类别映射，如果有就一起保存
-        class_map = CLASS_MAP if 'CLASS_MAP' in globals() else None
-
-        data_dict = {
-            'features': self.pre_pca_features,
-            'labels': self.pre_pca_labels,
-            'class_map': class_map
-        }
-        with open(save_path, 'wb') as f:
-            pickle.dump(data_dict, f)
-        logger.info(f"PCA前的特征数据已保存至 {save_path}")
-        return True
-
     def preprocess_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         """特征预处理：独热编码、标准化、归一化、PCA降维"""
 
         logger.info("开始特征预处理")
         df_processed = df.copy()
 
-        # ========== Step 1: 处理类别特征（独热编码） ==========
+        # 1: 处理类别特征（独热编码）
         for base_col in self.categorical_features_base:
             actual_col = self.get_actual_column_name(base_col)
             if actual_col and actual_col in df_processed.columns:
@@ -307,7 +259,7 @@ class DataProcessor:
                 df_processed = df_processed.drop(actual_col, axis=1)
                 df_processed = pd.concat([df_processed, encoded_df], axis=1)
 
-        # ========== Step 2: 获取标签列 ==========
+        # 2: 获取标签列
         label_col = None
         for possible_label in ['Label', 'label']:
             actual_col = self.get_actual_column_name(possible_label)
@@ -322,7 +274,7 @@ class DataProcessor:
                     logger.info(f"使用替代标签列: {col}")
                     break
 
-        # ========== Step 3: 数值特征归一化 ==========
+        # 3: 数值特征归一化
         numeric_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
         if label_col and label_col in numeric_cols:
             numeric_cols.remove(label_col)
@@ -349,11 +301,12 @@ class DataProcessor:
             numeric_cols = self.numeric_feature_order
             df_processed[numeric_cols] = self.minmax_scaler.transform(df_processed[numeric_cols])
 
-        if fit:
-            # 存储用于特征选择的数据
-            self.extract_pre_pca_data(df_processed, numeric_cols)
+        # 保存归一化后、PCA前的特征数据（适用于SVM）
+        self.normalized_features = df_processed[numeric_cols].values
+        if label_col:
+            self.normalized_labels = df_processed[label_col].values
 
-        # ========== Step 4: PCA 降维 ==========
+        # 4: PCA 降维
         if fit:
             logger.info(f"执行 PCA 降维: 从 {len(numeric_cols)} 维降至 {self.n_components} 维")
             self.pca_model = PCA(n_components=self.n_components)
@@ -371,9 +324,12 @@ class DataProcessor:
 
             pca_result = self.pca_model.transform(df_processed[numeric_cols])
 
-        # ========== Step 5: 构造结果 ==========
+        # 5: 构造结果
         pca_columns = [f'pca_component_{i + 1}' for i in range(self.n_components)]
         pca_df = pd.DataFrame(pca_result, columns=pca_columns, index=df_processed.index)
+
+        # 保存PCA后的特征数据
+        self.pca_features = pca_result
 
         if label_col:
             result_df = pd.concat([pca_df, df_processed[[label_col]]], axis=1)
@@ -394,6 +350,7 @@ class DataProcessor:
         # 3. 特征预处理
         df_processed = self.preprocess_features(df_clean, fit=train)
         self.last_processed_df = df_processed.copy()
+
         # 4. 提取特征和标签
         # 获取标签列
         label_col = None
@@ -457,7 +414,9 @@ class DataProcessor:
             'scalers': self.scalers,
             'encoders': self.encoders,
             'pca_model': self.pca_model,
-            'n_components': self.n_components
+            'n_components': self.n_components,
+            'minmax_scaler': self.minmax_scaler,
+            'numeric_feature_order': self.numeric_feature_order
         }
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -475,8 +434,26 @@ class DataProcessor:
         self.encoders = preprocessors.get('encoders', {})
         self.pca_model = preprocessors.get('pca_model')
         self.n_components = preprocessors.get('n_components', 20)
+        self.minmax_scaler = preprocessors.get('minmax_scaler')
+        self.numeric_feature_order = preprocessors.get('numeric_feature_order')
 
         logger.info(f"预处理器已从 {load_path} 加载，PCA维度: {self.n_components}")
+
+    def get_normalized_data(self):
+        """获取归一化后的数据，用于SVM训练"""
+        if hasattr(self, 'normalized_features') and hasattr(self, 'normalized_labels'):
+            return self.normalized_features, self.normalized_labels
+        else:
+            logger.error("未找到归一化后的数据")
+            return None, None
+
+    def get_pca_data(self):
+        """获取PCA降维后的数据，用于SVM训练"""
+        if hasattr(self, 'pca_features') and hasattr(self, 'normalized_labels'):
+            return self.pca_features, self.normalized_labels
+        else:
+            logger.error("未找到PCA降维后的数据")
+            return None, None
 
 
 class DDoSDataset(Dataset):
@@ -575,8 +552,43 @@ class DDoSDataset(Dataset):
 
         return x, y
 
+    def get_class_indices(self, selected_classes):
+        """
+        获取特定类别的样本索引
 
-def create_dataloader(dataset: DDoSDataset, batch_size: int = 32, shuffle: bool = True, num_workers: int = 4):
+        参数:
+            selected_classes: 需要的类别列表或单个类别
+
+        返回:
+            indices: 符合条件的样本索引列表
+        """
+        if isinstance(selected_classes, (int, np.integer)):
+            selected_classes = [selected_classes]
+
+        # 从标签中找出对应类别的索引
+        indices = []
+        for i in range(len(self.labels)):
+            if self.labels[i].item() in selected_classes:
+                indices.append(i)
+
+        logger.info(f"找到 {len(indices)} 个属于类别 {selected_classes} 的样本")
+        return indices
+
+    def create_class_subset(self, selected_classes):
+        """
+        创建仅包含特定类别的子数据集
+
+        参数:
+            selected_classes: 需要的类别列表或单个类别
+
+        返回:
+            subset: 子数据集
+        """
+        indices = self.get_class_indices(selected_classes)
+        return Subset(self, indices)
+
+
+def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = True, num_workers: int = 4):
     """创建数据加载器"""
     return DataLoader(
         dataset,
@@ -587,46 +599,32 @@ def create_dataloader(dataset: DDoSDataset, batch_size: int = 32, shuffle: bool 
     )
 
 
-# 测试用例
-if __name__ == "__main__":
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+def main():
+    train_dataset = DDoSDataset(
+        data_path="C:\\Users\\17380\\train_dataset.csv",
+        preprocessor_path='./outputs\\preprocessor.pkl',
+        train=False,
     )
+    X_pca, y = train_dataset.processor.get_pca_data()
 
-    # 初始化数据处理器
-    data_path = r"C:\Users\17380\processed_dataset_modified.csv"
-    processor = DataProcessor(data_path=data_path)
+    # 打印数据形状
+    print(f"X_pca shape: {X_pca.shape if X_pca is not None else 'None'}")
+    print(f"y shape: {y.shape if y is not None else 'None'}")
 
-    # 执行数据处理流水线
-    X, y = processor.process_data_pipeline(train=True)
+    # 打印更多有用信息
+    if X_pca is not None and y is not None:
+        print(f"X_pca dtype: {X_pca.dtype}")
+        print(f"y dtype: {y.dtype}")
 
-    print(f"特征数据形状: {X.shape}")
-    if y is not None and len(y) > 0:
-        print(f"标签数据形状: {y.shape}")
-        print(f"标签数据类型: {y.dtype}")
-        print(f"标签唯一值: {np.unique(y)}")
+        # 打印标签分布情况
+        unique_labels, counts = np.unique(y, return_counts=True)
+        print("标签分布情况:")
+        for label, count in zip(unique_labels, counts):
+            print(f"  类别 {label}: {count} 个样本")
 
-        # 确保标签是数值类型再计算比例
-        if np.issubdtype(y.dtype, np.number):
-            # 假设攻击标签是非零值
-            print(f"攻击样本比例: {np.mean(y != 0):.2%}")
-        else:
-            print(f"标签不是数值类型，无法计算比例")
+        # 打印前几个样本的标签
+        print(f"前10个样本标签: {y[:10]}")
 
-    # 测试PyTorch数据集
-    try:
-        dataset = DDoSDataset(data_path=data_path, train=True)
-        print(f"数据集大小: {len(dataset)}")
-        x, y = dataset[0]
-        print(f"样本特征形状: {x.shape}")  # 应该是 (feature_size, 1)
-        print(f"样本标签形状: {y.shape}")
 
-        # 测试数据加载器
-        dataloader = create_dataloader(dataset, batch_size=32)
-        batch_x, batch_y = next(iter(dataloader))
-        print(f"批次特征形状: {batch_x.shape}")  # 应该是 (batch_size, feature_size, 1)
-        print(f"批次标签形状: {batch_y.shape}")
-    except Exception as e:
-        print(f"数据集测试失败: {str(e)}")
+if __name__ == "__main__":
+    main()
