@@ -587,7 +587,6 @@ class DDoSDataset(Dataset):
         indices = self.get_class_indices(selected_classes)
         return Subset(self, indices)
 
-
 def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = True, num_workers: int = 4):
     """创建数据加载器"""
     return DataLoader(
@@ -597,7 +596,6 @@ def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = Tr
         num_workers=num_workers,
         pin_memory=True
     )
-
 
 def main():
     train_dataset = DDoSDataset(
@@ -624,7 +622,6 @@ def main():
 
         # 打印前几个样本的标签
         print(f"前10个样本标签: {y[:10]}")
-
 
 if __name__ == "__main__":
     main()
