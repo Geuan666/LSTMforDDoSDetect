@@ -5,12 +5,15 @@ import logging
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import pickle
 
 # 导入模块
 from data import DDoSDataset, create_dataloader
 from model import BiLSTMDetector
 from trainer import Trainer
 import utils
+from svm import train_svm_classifier, load_svm_classifier
+from cascade_model import SVMCascadeModel
 
 # 配置日志
 logging.basicConfig(
@@ -24,8 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 定义类别映射
-CLASS_MAP =  {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
-CLASS_NAMES = list(CLASS_MAP.values())
+CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8,
+             'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+CLASS_NAMES = list(CLASS_MAP.keys())
 
 
 def train_model(train_data_path, val_data_path, output_dir="./outputs",
@@ -36,8 +40,15 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    # 添加SVM分类器目录
+    svm_classifier_dir = os.path.join(output_dir, "svm_classifiers")
+    os.makedirs(svm_classifier_dir, exist_ok=True)
+
     # 设置预处理器保存路径
     preprocessor_path = os.path.join(output_dir, "preprocessor.pkl")
+
+    # 设置PCA前数据保存路径
+    pre_pca_path = os.path.join(output_dir, "pre_pca_data.pkl")
 
     # 设置设备
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -78,7 +89,6 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
     logger.info("初始化模型...")
     input_size = 1  # 根据数据集: 样本特征形状为 [20, 1]
     num_classes = 13  # 根据标签映射
-
 
     model = BiLSTMDetector(
         input_size=input_size,
@@ -150,13 +160,12 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
         save_path=os.path.join(output_dir, "roc_curves.png")
     )
 
-    # 可视化注意力权重
-    logger.info("可视化注意力权重...")
-    # 从验证集获取一个样本
-    val_sample, val_label = val_dataset[0]
-    # 添加批次维度
-    val_sample = val_sample.unsqueeze(0)
-    val_label = val_label.item()
+    # 保存PCA前数据
+    if train_dataset.processor.save_pre_pca_data(pre_pca_path):
+        logger.info(f"PCA前数据已保存到: {pre_pca_path}")
+    else:
+        logger.warning("无法保存PCA前数据，跳过SVM训练")
+        return model, history
 
     # 将模型导出为ONNX用于部署
     logger.info("导出模型为ONNX格式...")
@@ -166,6 +175,18 @@ def train_model(train_data_path, val_data_path, output_dir="./outputs",
 
     logger.info(f"模型训练和评估完成。结果保存到 {output_dir}")
     return model, history
+
+
+def train_svm_classifiers(data_path, output_dir, confusion_pairs=None):
+    """训练SVM二分类器"""
+    if confusion_pairs is None:
+        confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10)]
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for class1, class2 in confusion_pairs:
+        output_path = os.path.join(output_dir, f"svm_classifier_{class1}_{class2}.pkl")
+        train_svm_classifier(data_path, class1, class2, output_path)
 
 
 def main():
@@ -186,6 +207,61 @@ def main():
         weight_decay=0.001,
         gradient_clip=1.0
     )
+
+    # SVM级联模型训练和评估
+    svm_classifier_dir = os.path.join(output_dir, "svm_classifiers")
+    pre_pca_path = os.path.join(output_dir, "pre_pca_data.pkl")
+
+    # 检查PCA前数据是否存在
+    if os.path.exists(pre_pca_path):
+        # 训练SVM二分类器
+        logger.info("开始训练SVM二分类器...")
+        train_svm_classifiers(pre_pca_path, svm_classifier_dir)
+
+        # 创建验证数据加载器
+        val_dataset = DDoSDataset(
+            data_path=val_data_path,
+            preprocessor_path=os.path.join(output_dir, "preprocessor.pkl"),
+            train=False
+        )
+        val_loader = create_dataloader(val_dataset, batch_size=128, shuffle=False, num_workers=4)
+
+        # 初始化级联模型
+        logger.info("初始化SVM级联模型...")
+        cascade_model = SVMCascadeModel(model, confidence_threshold=0.95)
+        cascade_model.load_svm_classifiers(svm_classifier_dir)
+
+        # 评估级联模型
+        logger.info("使用SVM级联模型进行评估...")
+
+        # 加载验证集的PCA前特征
+        try:
+            with open(pre_pca_path, 'rb') as f:
+                pre_pca_data = pickle.load(f)
+                val_pre_pca_features = pre_pca_data['features']
+
+            # 确保验证集有相同数量的样本
+            if val_dataset.processor.save_pre_pca_data(os.path.join(output_dir, "val_pre_pca_data.pkl")):
+                with open(os.path.join(output_dir, "val_pre_pca_data.pkl"), 'rb') as f:
+                    val_pre_pca_data = pickle.load(f)
+                    val_pre_pca_features = val_pre_pca_data['features']
+
+                # 使用验证集的PCA前特征评估级联模型
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                utils.evaluate_svm_cascade_model(
+                    cascade_model=cascade_model,
+                    val_loader=val_loader,
+                    val_pre_pca_features=val_pre_pca_features,
+                    device=device,
+                    save_path=os.path.join(output_dir, "svm_cascade_confusion_matrix.png"),
+                    class_names=CLASS_NAMES
+                )
+            else:
+                logger.warning("无法保存验证集的PCA前数据，跳过级联模型评估")
+        except Exception as e:
+            logger.error(f"加载或处理PCA前数据时出错: {e}")
+    else:
+        logger.warning("找不到PCA前数据，跳过SVM训练和级联模型评估")
 
     logger.info("DDoS检测系统训练成功完成！")
 

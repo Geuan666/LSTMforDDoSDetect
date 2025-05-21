@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 from torch.utils.data import Dataset, DataLoader
 import joblib
 import json
+from utils import CLASS_MAP, CLASS_NAMES  # 如果CLASS_MAP定义在utils.py中
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
@@ -54,8 +55,10 @@ class DataProcessor:
             'BwdIATMean', 'BwdIATStd', 'BwdIATMax', 'BwdIATMin', 'FwdPSHFlags',
             'BwdPSHFlags', 'FwdURGFlags', 'BwdURGFlags', 'FwdHeaderLength',
             'BwdHeaderLength', 'FwdPackets/s', 'BwdPackets/s', 'Init_Win_bytes_forward',
-            'Init_Win_bytes_backward', 'AveragePacketSize', 'ActiveMean', 'ActiveMin', 'ActiveMax', 'ActiveStd',
-            'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd',
+            'Init_Win_bytes_backward', 'min_seg_size_forward', 'SubflowFwdBytes',
+            'SubflowBwdBytes', 'AveragePacketSize', 'AvgFwdSegmentSize',
+            'AvgBwdSegmentSize', 'ActiveMean', 'ActiveMin', 'ActiveMax', 'ActiveStd',
+            'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd', 'Timestamp',
         ]
 
         # 需要进行对数转换的特征
@@ -212,19 +215,68 @@ class DataProcessor:
                 Q1 = df_clean[col].quantile(0.25)
                 Q3 = df_clean[col].quantile(0.75)
                 IQR = Q3 - Q1
-                lower_bound = Q1 - 3 * IQR
-                upper_bound = Q3 + 3 * IQR
+                lower_bound = Q1 - 5 * IQR
+                upper_bound = Q3 + 5 * IQR
                 # 将异常值限制在边界范围内
                 df_clean[col] = df_clean[col].clip(lower_bound, upper_bound)
 
         logger.info("数据清洗完成")
         return df_clean
 
+    def extract_pre_pca_data(self, df, numeric_cols):
+        """提取并存储PCA前数据"""
+        # 确保必要的列存在
+        if not numeric_cols:
+            logger.error("没有数值特征列可用于提取")
+            return
+
+        # 存储PCA前的特征数据
+        self.pre_pca_features = df[numeric_cols].values.copy()
+
+        # 获取标签列
+        label_col = None
+        for possible_label in ['Label', 'label']:
+            actual_col = self.get_actual_column_name(possible_label)
+            if actual_col and actual_col in df.columns:
+                label_col = actual_col
+                break
+
+        if not label_col:
+            for col in df.columns:
+                if 'label' in col.lower():
+                    label_col = col
+                    break
+
+        if label_col:
+            self.pre_pca_labels = df[label_col].values.copy()
+        else:
+            logger.warning("无法找到标签列")
+            self.pre_pca_labels = None
+
+    def save_pre_pca_data(self, save_path):
+        """保存PCA前的数据"""
+        if not hasattr(self, 'pre_pca_features') or not hasattr(self, 'pre_pca_labels'):
+            logger.error("没有可用的PCA前数据")
+            return False
+
+        # 保存数据
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        # 检查我们是否有类别映射，如果有就一起保存
+        class_map = CLASS_MAP if 'CLASS_MAP' in globals() else None
+
+        data_dict = {
+            'features': self.pre_pca_features,
+            'labels': self.pre_pca_labels,
+            'class_map': class_map
+        }
+        with open(save_path, 'wb') as f:
+            pickle.dump(data_dict, f)
+        logger.info(f"PCA前的特征数据已保存至 {save_path}")
+        return True
+
     def preprocess_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         """特征预处理：独热编码、标准化、归一化、PCA降维"""
-        import joblib
-        import json
-        import os
 
         logger.info("开始特征预处理")
         df_processed = df.copy()
@@ -297,6 +349,10 @@ class DataProcessor:
             numeric_cols = self.numeric_feature_order
             df_processed[numeric_cols] = self.minmax_scaler.transform(df_processed[numeric_cols])
 
+        if fit:
+            # 存储用于特征选择的数据
+            self.extract_pre_pca_data(df_processed, numeric_cols)
+
         # ========== Step 4: PCA 降维 ==========
         if fit:
             logger.info(f"执行 PCA 降维: 从 {len(numeric_cols)} 维降至 {self.n_components} 维")
@@ -337,7 +393,7 @@ class DataProcessor:
 
         # 3. 特征预处理
         df_processed = self.preprocess_features(df_clean, fit=train)
-
+        self.last_processed_df = df_processed.copy()
         # 4. 提取特征和标签
         # 获取标签列
         label_col = None

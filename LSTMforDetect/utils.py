@@ -361,3 +361,97 @@ def predict_batch(model: torch.nn.Module,
         result += (np.array(y_probs),)
 
     return result
+
+    # 在文件末尾添加
+    def evaluate_svm_cascade_model(cascade_model, val_loader, val_pre_pca_features, device,
+                                   save_path=None, class_names=None):
+        """
+        评估SVM级联模型
+
+        参数:
+            cascade_model: SVM级联模型
+            val_loader: 验证数据加载器
+            val_pre_pca_features: 验证集的PCA前特征
+            device: 运行设备
+            save_path: 保存混淆矩阵图像的路径
+            class_names: 类别名称
+        """
+        from sklearn.metrics import accuracy_score
+
+        # 收集预测和真实标签
+        y_true = []
+        y_pred_base = []
+        y_pred_cascade = []
+
+        current_idx = 0
+
+        for inputs, targets in val_loader:
+            # 获取当前批次大小
+            batch_size = inputs.size(0)
+
+            # 提取当前批次的PCA前特征
+            if current_idx + batch_size <= len(val_pre_pca_features):
+                batch_pre_pca = val_pre_pca_features[current_idx:current_idx + batch_size]
+                current_idx += batch_size
+            else:
+                logger.warning(f"索引越界: {current_idx}+{batch_size} > {len(val_pre_pca_features)}")
+                batch_pre_pca = None
+
+            # 使用级联模型预测
+            final_pred, base_pred, _ = cascade_model.predict(
+                inputs, pre_pca_features=batch_pre_pca, device=device
+            )
+
+            # 记录结果
+            y_true.extend(targets.squeeze().cpu().numpy())
+            y_pred_base.extend(base_pred)
+            y_pred_cascade.extend(final_pred)
+
+        # 计算准确率
+        base_acc = accuracy_score(y_true, y_pred_base)
+        cascade_acc = accuracy_score(y_true, y_pred_cascade)
+
+        logger.info(f"BiLSTM基础模型准确率: {base_acc:.4f}")
+        logger.info(f"SVM级联模型准确率: {cascade_acc:.4f}")
+        logger.info(f"提升: {(cascade_acc - base_acc) * 100:.2f}%")
+
+        # 针对混淆类别对的专项评估
+        for class1, class2 in cascade_model.confusion_pairs:
+            # 只选择属于这两类的样本
+            pair_mask = np.logical_or(np.array(y_true) == class1, np.array(y_true) == class2)
+            if sum(pair_mask) == 0:
+                continue
+
+            pair_true = np.array(y_true)[pair_mask]
+            pair_base_pred = np.array(y_pred_base)[pair_mask]
+            pair_cascade_pred = np.array(y_pred_cascade)[pair_mask]
+
+            pair_base_acc = accuracy_score(pair_true, pair_base_pred)
+            pair_cascade_acc = accuracy_score(pair_true, pair_cascade_pred)
+
+            logger.info(f"类别 {class1} vs {class2}:")
+            logger.info(f"  BiLSTM准确率: {pair_base_acc:.4f}")
+            logger.info(f"  SVM级联准确率: {pair_cascade_acc:.4f}")
+            logger.info(f"  提升: {(pair_cascade_acc - pair_base_acc) * 100:.2f}%")
+
+        # 绘制混淆矩阵
+        if save_path:
+            plot_confusion_matrix(
+                y_true=y_true,
+                y_pred=y_pred_cascade,
+                class_names=class_names,
+                normalize=True,
+                save_path=save_path
+            )
+
+            # 也保存基础模型的混淆矩阵
+            base_save_path = save_path.replace('.png', '_base.png')
+            plot_confusion_matrix(
+                y_true=y_true,
+                y_pred=y_pred_base,
+                class_names=class_names,
+                normalize=True,
+                save_path=base_save_path
+            )
+
+        return cascade_acc
