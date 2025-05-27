@@ -15,7 +15,7 @@ class BiLSTMDetector(nn.Module):
     用于DDoS攻击检测的双向LSTM模型
     """
 
-    def __init__(self, input_size=1, hidden_size=64, num_layers=2, num_classes=13, dropout_rate=0.3):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, num_classes=13, dropout_rate=0.2):
         """
         初始化DDoS检测模型
         参数:
@@ -46,13 +46,13 @@ class BiLSTMDetector(nn.Module):
         # Dropout层
         self.dropout = nn.Dropout(dropout_rate)
 
-        # 批归一化层 - 加速收敛并提高泛化能力
+        # 层归一化层 - 加速收敛并提高泛化能力
         self.batch_norm = nn.BatchNorm1d(hidden_size * 2)
 
         # 分类器 - 使用两层全连接网络
         self.fc1 = nn.Linear(hidden_size * 2, hidden_size)
         self.relu = nn.GELU()
-        self.fc2 = nn.Linear(hidden_size, num_classes)
+        self.fc2 = nn.Linear(hidden_size , num_classes)
 
         # 初始化权重
         self._init_weights()
@@ -104,7 +104,7 @@ class BiLSTMDetector(nn.Module):
         # 连接前向和后向状态
         combined = torch.cat((final_forward, final_backward), dim=1)  # [batch_size, hidden_size*2]
 
-        # 应用批归一化
+        # 应用层归一化
         combined = self.batch_norm(combined)
 
         # 应用dropout进行正则化
@@ -205,11 +205,11 @@ class SVMCascadeModel:
         初始化级联模型
         参数:
             base_model: 基础BiLSTM模型
-            confusion_pairs: 混淆类别对列表，如 [(11,12), (5,7), (2,8), (9,10)]
+            confusion_pairs: 混淆类别对列表，如 [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
             confidence_threshold: 不触发二级分类器的置信度阈值
         """
         self.base_model = base_model
-        self.confusion_pairs = confusion_pairs or [(11, 12), (5, 7), (2, 8), (9, 10)]
+        self.confusion_pairs = confusion_pairs or [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
         self.confidence_threshold = confidence_threshold
         self.svm_models = {}
 

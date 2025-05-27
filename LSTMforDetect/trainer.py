@@ -410,13 +410,13 @@ class SVMTrainer:
         参数:
             X: 特征矩阵
             y: 标签向量
-            confusion_pairs: 混淆类别对列表，如 [(11,12), (5,7), (2,8), (9,10)]
+            confusion_pairs: 混淆类别对列表，如 [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
 
         返回:
             results: 包含每个分类器准确率的字典
         """
         if confusion_pairs is None:
-            confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10)]
+            confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
 
         results = {}
 

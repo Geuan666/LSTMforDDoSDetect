@@ -21,8 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 定义类别映射
-CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8,
-             'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
 CLASS_NAMES = list(CLASS_MAP.keys())
 
 
@@ -351,8 +350,8 @@ def evaluate_cascade_model(lstm_model, val_data_path, output_dir="./outputs", co
 def main():
     """运行训练和评估的主函数"""
     # 设置路径
-    train_data_path = "C:\\Users\\17380\\train_dataset.csv"  # 替换为您的训练数据路径
-    val_data_path = "C:\\Users\\17380\\test_dataset.csv"  # 替换为您的验证数据路径
+    train_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets\train_dataset.csv"  # 替换为您的训练数据路径
+    val_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets\test_dataset.csv"  # 替换为您的验证数据路径
     output_dir = "./outputs"
 
     # 1. 训练LSTM模型
@@ -368,7 +367,7 @@ def main():
     )
 
     # 2. 训练SVM模型（针对容易混淆的类别对）
-    confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10)]
+    confusion_pairs = [(10, 11), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
     svm_results = train_svm_models(
         train_data_path=train_data_path,
         output_dir=output_dir,

@@ -547,13 +547,17 @@ def preprocess_flow_features(flow_features, preprocessor_path):
         # 确保列顺序一致
         df_numeric = df[numeric_feature_order]
         numeric_data = minmax_scaler.transform(df_numeric)
+
+        # 将转换后的数据包装回DataFrame以保留特征名称
+        # 这样应用PCA时就不会有警告了
+        numeric_df = pd.DataFrame(numeric_data, columns=numeric_feature_order)
     else:
         logger.error("无法应用归一化，特征顺序或归一化器缺失")
         return None
 
-    # 5. 应用PCA降维
+    # 5. 应用PCA降维 - 修改这部分
     if pca_model:
-        pca_result = pca_model.transform(numeric_data)
+        pca_result = pca_model.transform(numeric_df)  # 使用带有列名的DataFrame
         logger.info(f"PCA降维后特征形状: {pca_result.shape}")
     else:
         logger.error("无法应用PCA降维，PCA模型缺失")

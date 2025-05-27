@@ -37,7 +37,6 @@ class DataProcessor:
         """
         self.data_path = data_path
         self.n_workers = n_workers
-        self.column_map = None  # 用于存储列名映射
 
         # PCA相关参数
         self.n_components = n_components
@@ -47,51 +46,61 @@ class DataProcessor:
         self.scalers = {}
         self.encoders = {}
 
-        # 不带空格版本的特征列表，使用TimeStamp的目的是防止删除重复值时删除过多，更好的解决方案是重新提取数据集
+        # 使用CSV文件中的实际列名（精确匹配，包括前导空格）
         self.base_features = [
-            'Protocol', 'FlowDuration', 'TotalFwdPackets', 'TotalBackwardPackets',
-            'FlowBytes/s', 'FlowPackets/s', 'FwdPacketLengthMax', 'FwdPacketLengthMin',
-            'FwdPacketLengthMean', 'FwdPacketLengthStd', 'BwdPacketLengthMax',
-            'BwdPacketLengthMin', 'BwdPacketLengthMean', 'BwdPacketLengthStd',
-            'PacketLengthVariance', 'FlowIATMin', 'FlowIATMax', 'FlowIATMean',
-            'FlowIATStd', 'FwdIATMean', 'FwdIATStd', 'FwdIATMax', 'FwdIATMin',
-            'BwdIATMean', 'BwdIATStd', 'BwdIATMax', 'BwdIATMin', 'FwdPSHFlags',
-            'BwdPSHFlags', 'FwdURGFlags', 'BwdURGFlags', 'FwdHeaderLength',
-            'BwdHeaderLength', 'FwdPackets/s', 'BwdPackets/s', 'Init_Win_bytes_forward',
-            'Init_Win_bytes_backward', 'min_seg_size_forward', 'SubflowFwdBytes',
-            'SubflowBwdBytes', 'AveragePacketSize', 'AvgFwdSegmentSize',
-            'AvgBwdSegmentSize', 'ActiveMean', 'ActiveMin', 'ActiveMax', 'ActiveStd',
-            'IdleMean', 'IdleMin', 'IdleMax', 'IdleStd', 'Timestamp',
+            ' Protocol',
+            ' Flow Duration',
+            ' Total Fwd Packets',
+            ' Total Backward Packets',
+            ' Fwd Packet Length Max',
+            ' Fwd Packet Length Min',
+            ' Fwd Packet Length Mean',
+            ' Fwd Packet Length Std',
+            'Bwd Packet Length Max',
+            ' Bwd Packet Length Min',
+            ' Bwd Packet Length Mean',
+            ' Bwd Packet Length Std',
+            ' Flow Packets/s',
+            ' Flow IAT Max',
+            'Fwd IAT Total',
+            ' Fwd IAT Mean',
+            ' Fwd IAT Std',
+            ' Fwd IAT Max',
+            ' Fwd IAT Min',
+            'Bwd IAT Total',
+            ' Bwd IAT Mean',
+            ' Bwd IAT Std',
+            ' Bwd IAT Max',
+            ' Bwd IAT Min',
+            'Fwd PSH Flags',
+            ' Bwd PSH Flags',
+            ' Fwd Header Length',
+            ' Bwd Header Length',
+            ' Min Packet Length',
+            ' Packet Length Std',
+            ' RST Flag Count',
+            ' ACK Flag Count',
+            ' URG Flag Count',
+            ' CWE Flag Count',
+            ' Average Packet Size',
+            ' Avg Fwd Segment Size',
+            ' Avg Bwd Segment Size',
+            'Init_Win_bytes_forward',
+            ' Init_Win_bytes_backward',
+            ' act_data_pkt_fwd',
+            'Active Mean',
+            ' Active Max',
+            ' Active Min',
+            ' Inbound',
         ]
 
-        # 需要进行对数转换的特征,经实验，使用对数转换效果较好
+        # 需要进行对数转换的特征
         self.log_transform_features_base = [
-            'FlowBytes/s', 'FlowPackets/s', 'FwdPackets/s', 'BwdPackets/s',
-            'FlowDuration', 'PacketLengthVariance'
+            ' Flow Packets/s', ' Flow Duration'
         ]
 
-        # 类别特征
-        self.categorical_features_base = ['Protocol']
-
-    def normalize_column_names(self, df: pd.DataFrame) -> Dict[str, str]:
-        """
-        创建标准化的列名映射，将所有列名无空格版本作为键，原始列名作为值，原始数据 列名中存在不确定的前导空格
-        """
-        column_map = {}
-        for col in df.columns:
-            # 移除所有空格后的列名作为键
-            normalized_key = col.replace(" ", "")
-            column_map[normalized_key] = col
-
-        logger.info(f"创建了列名映射，共 {len(column_map)} 个列")
-        return column_map
-
-    def get_actual_column_name(self, normalized_name: str) -> Optional[str]:
-        """根据标准化名称获取数据集中的实际列名"""
-        if self.column_map is None:
-            logger.warning("列名映射尚未初始化")
-            return None
-        return self.column_map.get(normalized_name)
+        # 类别特征（注意前导空格）
+        self.categorical_features_base = [' Protocol']
 
     def load_data(self) -> pd.DataFrame:
         """加载CSV数据文件，只读取需要的列"""
@@ -105,63 +114,70 @@ class DataProcessor:
                 logger.warning(f"默认引擎读取头部失败: {e}，切换 Python 引擎")
                 header_df = pd.read_csv(self.data_path, nrows=0, engine='python')
 
-            # 先创建临时列名映射，用于识别需要的列
-            temp_column_map = {}
-            for col in header_df.columns:
-                normalized_key = col.replace(" ", "")
-                temp_column_map[normalized_key] = col
+            # 获取实际存在的列名
+            available_columns = set(header_df.columns)
+            logger.info(f"CSV文件包含 {len(available_columns)} 个列")
 
             # 确定要读取的列名
             usecols = []
+            missing_features = []
 
             # 添加特征列
             for base_col in self.base_features:
-                if base_col in temp_column_map:
-                    usecols.append(temp_column_map[base_col])
+                if base_col in available_columns:
+                    usecols.append(base_col)
+                else:
+                    missing_features.append(base_col)
 
             # 添加标签列
             label_col = None
-            for label_name in ['Label', 'label']:
-                if label_name in temp_column_map:
-                    label_col = temp_column_map[label_name]
-                    usecols.append(label_col)
-                    break
-
-            if not label_col:
+            if ' Label' in available_columns:
+                label_col = ' Label'
+                usecols.append(label_col)
+            elif 'Label' in available_columns:
+                label_col = 'Label'
+                usecols.append(label_col)
+            else:
                 # 尝试其他方式找标签列
                 for col in header_df.columns:
                     if 'label' in col.lower():
                         usecols.append(col)
-                        logger.info(f"使用替代标签列: {col}")
+                        label_col = col
+                        logger.info(f"使用替代标签列: '{col}'")
                         break
 
-            if not usecols:
-                logger.error(f"无法识别需要读取的列")
+            if not label_col:
+                logger.error("无法找到标签列")
                 return pd.DataFrame()
+
+            if missing_features:
+                logger.warning(f"以下 {len(missing_features)} 个特征在CSV中不存在：")
+                for mf in missing_features[:10]:  # 只显示前10个
+                    logger.warning(f"  缺失特征: '{mf}'")
+                if len(missing_features) > 10:
+                    logger.warning(f"  ... 还有 {len(missing_features) - 10} 个特征缺失")
 
             logger.info(f"将读取 {len(usecols)} 列: {len(usecols) - 1} 个特征列和 1 个标签列")
 
-            # 分块读取，考虑到文件可能很大，很耗内存
-            chunks = None
+            # 分块读取，考虑到文件可能很大
+            chunks = []
             try:
-                chunks = pd.read_csv(self.data_path, chunksize=10000, usecols=usecols, on_bad_lines='skip')
+                chunk_iter = pd.read_csv(self.data_path, chunksize=10000, usecols=usecols, on_bad_lines='skip')
+                for chunk in chunk_iter:
+                    chunks.append(chunk)
             except Exception as e:
                 logger.warning(f"C 引擎读取失败: {e}，切换 Python 引擎")
-                chunks = pd.read_csv(self.data_path, engine='python', chunksize=10000, usecols=usecols,
-                                     on_bad_lines='skip')
+                chunk_iter = pd.read_csv(self.data_path, engine='python', chunksize=10000, usecols=usecols,
+                                         on_bad_lines='skip')
+                for chunk in chunk_iter:
+                    chunks.append(chunk)
 
-            chunk_list = []
-            for chunk in chunks:
-                chunk_list.append(chunk)
-
-            if not chunk_list:
+            if not chunks:
+                logger.error("读取数据失败，无数据块")
                 return pd.DataFrame()
 
-            df = pd.concat(chunk_list, ignore_index=True)
+            df = pd.concat(chunks, ignore_index=True)
             logger.info(f"文件 {os.path.basename(self.data_path)} 读取完成，shape={df.shape}")
-
-            # 创建列名映射
-            self.column_map = self.normalize_column_names(df)
 
             return df
 
@@ -180,51 +196,66 @@ class DataProcessor:
     def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """数据清洗：去重、处理缺失值、异常值处理"""
         logger.info("开始数据清洗")
+        logger.info(f"原始数据形状: {df.shape}")
 
         # 1. 移除重复记录
         df_clean = df.drop_duplicates()
-        logger.info(f"移除重复记录后剩余 {len(df_clean)} 条记录，df_clean.shape={df_clean.shape}")
+        logger.info(f"移除重复记录后剩余 {len(df_clean)} 条记录")
         after_dedup = len(df_clean)
 
         # 获取标签列名
         label_col = None
-        for possible_label in ['Label', 'label']:
-            possible_col = self.get_actual_column_name(possible_label)
-            if possible_col and possible_col in df_clean.columns:
-                label_col = possible_col
-                break
-
-        if not label_col:
+        if ' Label' in df_clean.columns:
+            label_col = ' Label'
+        elif 'Label' in df_clean.columns:
+            label_col = 'Label'
+        else:
             # 尝试其他方式找标签列
             for col in df_clean.columns:
                 if 'label' in col.lower():
                     label_col = col
-                    logger.info(f"使用替代标签列: {col}")
+                    logger.info(f"使用替代标签列: '{col}'")
                     break
 
-        # 2. 处理缺失值
-        df_clean = self.dropna_in_chunks(df_clean)
-        logger.info(f"删除缺失值后剩余 {len(df_clean)} 条记录 (删除了 {after_dedup - len(df_clean)} 条)")
+        if not label_col:
+            logger.error("清洗阶段无法找到标签列")
+            return pd.DataFrame()
 
-        # 对分类特征使用众数填充
+        # 2. 处理缺失值
+        missing_before = df_clean.isnull().sum().sum()
+        logger.info(f"处理前缺失值总数: {missing_before}")
+
+        if missing_before > 0:
+            df_clean = self.dropna_in_chunks(df_clean)
+            logger.info(f"删除缺失值后剩余 {len(df_clean)} 条记录 (删除了 {after_dedup - len(df_clean)} 条)")
+
+        # 对分类特征使用众数填充（如果还有缺失值）
         numeric_cols = df_clean.select_dtypes(include=['number']).columns
         cat_cols = df_clean.select_dtypes(include=['object']).columns
         for col in cat_cols:
             if col != label_col:  # 不处理标签列
-                df_clean[col] = df_clean[col].fillna(df_clean[col].mode()[0])
+                mode_values = df_clean[col].mode()
+                if len(mode_values) > 0:
+                    df_clean[col] = df_clean[col].fillna(mode_values[0])
 
         # 3. 异常值处理（使用IQR方法）
+        outlier_count = 0
         for col in numeric_cols:
             if col != label_col:  # 不处理标签列
                 Q1 = df_clean[col].quantile(0.25)
                 Q3 = df_clean[col].quantile(0.75)
                 IQR = Q3 - Q1
-                lower_bound = Q1 - 5 * IQR#经实验，取值5，使得有价值的异常仍然保留，即能体现异常，但是又不会因为异常影响运算，且计算较为平稳
-                upper_bound = Q3 + 5 * IQR
-                # 将异常值限制在边界范围内
-                df_clean[col] = df_clean[col].clip(lower_bound, upper_bound)
+                if IQR > 0:  # 避免除零错误
+                    lower_bound = Q1 - 5 * IQR
+                    upper_bound = Q3 + 5 * IQR
+                    # 统计异常值数量
+                    outliers = ((df_clean[col] < lower_bound) | (df_clean[col] > upper_bound)).sum()
+                    outlier_count += outliers
+                    # 将异常值限制在边界范围内
+                    df_clean[col] = df_clean[col].clip(lower_bound, upper_bound)
 
-        logger.info("数据清洗完成")
+        logger.info(f"处理了 {outlier_count} 个异常值")
+        logger.info(f"数据清洗完成，最终形状: {df_clean.shape}")
         return df_clean
 
     def preprocess_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
@@ -235,70 +266,115 @@ class DataProcessor:
 
         # 1: 处理类别特征（独热编码）
         for base_col in self.categorical_features_base:
-            actual_col = self.get_actual_column_name(base_col)
-            if actual_col and actual_col in df_processed.columns:
-                already_encoded = any(col.startswith(f"{base_col}_") for col in df_processed.columns)
+            if base_col in df_processed.columns:
+                already_encoded = any(col.startswith(f"{base_col.strip()}_") for col in df_processed.columns)
                 if already_encoded:
-                    logger.info(f"检测到特征 {base_col} 已经完成独热编码，跳过")
+                    logger.info(f"检测到特征 '{base_col}' 已经完成独热编码，跳过")
                     continue
 
                 if fit:
                     encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-                    encoded_data = encoder.fit_transform(df_processed[[actual_col]])
+                    encoded_data = encoder.fit_transform(df_processed[[base_col]])
                     self.encoders[base_col] = encoder
+                    logger.info(f"对特征 '{base_col}' 进行独热编码，生成 {encoded_data.shape[1]} 个新特征")
                 else:
                     encoder = self.encoders.get(base_col)
                     if encoder is None:
-                        logger.warning(f"找不到特征 {base_col} 的编码器，跳过处理")
+                        logger.warning(f"找不到特征 '{base_col}' 的编码器，跳过处理")
                         continue
-                    encoded_data = encoder.transform(df_processed[[actual_col]])
+                    encoded_data = encoder.transform(df_processed[[base_col]])
 
-                encoded_cols = [f"{base_col}_{cat}" for cat in encoder.categories_[0]]
+                encoded_cols = [f"{base_col.strip()}_{cat}" for cat in encoder.categories_[0]]
                 encoded_df = pd.DataFrame(encoded_data, columns=encoded_cols, index=df_processed.index)
 
-                df_processed = df_processed.drop(actual_col, axis=1)
+                df_processed = df_processed.drop(base_col, axis=1)
                 df_processed = pd.concat([df_processed, encoded_df], axis=1)
 
         # 2: 获取标签列
         label_col = None
-        for possible_label in ['Label', 'label']:
-            actual_col = self.get_actual_column_name(possible_label)
-            if actual_col and actual_col in df_processed.columns:
-                label_col = actual_col
-                break
-
-        if not label_col:
+        if ' Label' in df_processed.columns:
+            label_col = ' Label'
+        elif 'Label' in df_processed.columns:
+            label_col = 'Label'
+        else:
             for col in df_processed.columns:
                 if 'label' in col.lower():
                     label_col = col
-                    logger.info(f"使用替代标签列: {col}")
+                    logger.info(f"使用替代标签列: '{col}'")
                     break
+
+        if not label_col:
+            logger.error("预处理阶段无法找到标签列")
+            raise ValueError("无法找到标签列")
 
         # 3: 数值特征归一化
         numeric_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
         if label_col and label_col in numeric_cols:
             numeric_cols.remove(label_col)
 
+        logger.info(f"找到 {len(numeric_cols)} 个数值特征")
+
         os.makedirs('models', exist_ok=True)  # 创建模型目录
 
         if fit:
             self.numeric_feature_order = numeric_cols
             self.minmax_scaler = MinMaxScaler()
+
+            # 检查数值特征是否包含无效值
+            for col in numeric_cols:
+                if df_processed[col].isnull().any():
+                    logger.warning(f"特征 '{col}' 包含NaN值，用0填充")
+                    df_processed[col] = df_processed[col].fillna(0)
+                if np.isinf(df_processed[col]).any():
+                    logger.warning(f"特征 '{col}' 包含无穷值，用有限值替换")
+                    df_processed[col] = np.where(np.isinf(df_processed[col]), 0, df_processed[col])
+
             df_processed[numeric_cols] = self.minmax_scaler.fit_transform(df_processed[numeric_cols])
 
             # 保存 scaler 和特征顺序
             joblib.dump(self.minmax_scaler, 'models/minmax_scaler.pkl')
             with open('models/numeric_feature_order.json', 'w') as f:
                 json.dump(self.numeric_feature_order, f)
+            logger.info(f"保存了 {len(numeric_cols)} 个数值特征的顺序和scaler")
         else:
             try:
                 self.minmax_scaler = joblib.load('models/minmax_scaler.pkl')
                 with open('models/numeric_feature_order.json', 'r') as f:
-                    self.numeric_feature_order = json.load(f)
-            except Exception as e:
-                raise RuntimeError("验证阶段缺少 scaler 或特征顺序，并且加载失败") from e
+                    saved_feature_order = json.load(f)
 
-            numeric_cols = self.numeric_feature_order
+                # 检查特征顺序是否匹配
+                missing_features = []
+                available_features = []
+
+                for saved_col in saved_feature_order:
+                    if saved_col in df_processed.columns:
+                        available_features.append(saved_col)
+                    else:
+                        missing_features.append(saved_col)
+
+                if missing_features:
+                    logger.warning(f"缺失 {len(missing_features)} 个训练时使用的特征")
+
+                self.numeric_feature_order = available_features
+                numeric_cols = available_features
+
+                if len(numeric_cols) == 0:
+                    raise RuntimeError("无法找到任何匹配的数值特征列")
+
+                logger.info(f"验证阶段使用 {len(numeric_cols)} 个特征")
+
+                # 检查数值特征是否包含无效值
+                for col in numeric_cols:
+                    if df_processed[col].isnull().any():
+                        logger.warning(f"特征 '{col}' 包含NaN值，用0填充")
+                        df_processed[col] = df_processed[col].fillna(0)
+                    if np.isinf(df_processed[col]).any():
+                        logger.warning(f"特征 '{col}' 包含无穷值，用有限值替换")
+                        df_processed[col] = np.where(np.isinf(df_processed[col]), 0, df_processed[col])
+
+            except Exception as e:
+                raise RuntimeError(f"验证阶段缺少 scaler 或特征顺序: {e}") from e
+
             df_processed[numeric_cols] = self.minmax_scaler.transform(df_processed[numeric_cols])
 
         # 保存归一化后、PCA前的特征数据（适用于SVM）
@@ -336,16 +412,24 @@ class DataProcessor:
         else:
             result_df = pca_df
 
-        logger.info(f"PCA降维完成，最终特征维数: {result_df.shape[1]}")
+        logger.info(f"PCA降维完成，最终特征维数: {result_df.shape[1] - (1 if label_col else 0)}")
         return result_df
 
     def process_data_pipeline(self, train: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """完整数据处理流水线"""
+        logger.info(f"开始数据处理流水线，模式: {'训练' if train else '验证'}")
+
         # 1. 加载数据
         df = self.load_data()
+        if df.empty:
+            logger.error("数据加载失败")
+            return np.array([]), np.array([])
 
         # 2. 数据清洗
         df_clean = self.clean_data(df)
+        if df_clean.empty:
+            logger.error("数据清洗后为空")
+            return np.array([]), np.array([])
 
         # 3. 特征预处理
         df_processed = self.preprocess_features(df_clean, fit=train)
@@ -354,17 +438,15 @@ class DataProcessor:
         # 4. 提取特征和标签
         # 获取标签列
         label_col = None
-        for possible_label in ['Label', 'label']:
-            possible_col = self.get_actual_column_name(possible_label)
-            if possible_col and possible_col in df_processed.columns:
-                label_col = possible_col
-                break
-
-        if not label_col:
+        if ' Label' in df_processed.columns:
+            label_col = ' Label'
+        elif 'Label' in df_processed.columns:
+            label_col = 'Label'
+        else:
             for col in df_processed.columns:
                 if 'label' in col.lower():
                     label_col = col
-                    logger.info(f"使用替代标签列: {col}")
+                    logger.info(f"使用替代标签列: '{col}'")
                     break
 
         if not label_col:
@@ -377,8 +459,9 @@ class DataProcessor:
         # 确保特征全是数值类型
         for col in feature_cols:
             if not pd.api.types.is_numeric_dtype(df_processed[col]):
-                logger.warning(f"将非数值特征 {col} 转换为数值类型")
+                logger.warning(f"将非数值特征 '{col}' 转换为数值类型")
                 df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
+                df_processed[col] = df_processed[col].fillna(0)
 
         # 提取特征和标签
         X = df_processed[feature_cols].values
@@ -406,6 +489,8 @@ class DataProcessor:
             logger.warning("特征数据中包含NaN或无穷值，将其替换为0")
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
+        logger.info(f"最终特征形状: {X.shape}, 标签形状: {y.shape}")
+        logger.info("数据处理流水线完成")
         return X, y
 
     def save_preprocessors(self, save_path: str):
@@ -416,7 +501,9 @@ class DataProcessor:
             'pca_model': self.pca_model,
             'n_components': self.n_components,
             'minmax_scaler': self.minmax_scaler,
-            'numeric_feature_order': self.numeric_feature_order
+            'numeric_feature_order': self.numeric_feature_order,
+            'base_features': self.base_features,
+            'categorical_features_base': self.categorical_features_base
         }
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -436,6 +523,12 @@ class DataProcessor:
         self.n_components = preprocessors.get('n_components', 20)
         self.minmax_scaler = preprocessors.get('minmax_scaler')
         self.numeric_feature_order = preprocessors.get('numeric_feature_order')
+
+        # 兼容旧版本
+        if 'base_features' in preprocessors:
+            self.base_features = preprocessors['base_features']
+        if 'categorical_features_base' in preprocessors:
+            self.categorical_features_base = preprocessors['categorical_features_base']
 
         logger.info(f"预处理器已从 {load_path} 加载，PCA维度: {self.n_components}")
 
@@ -587,6 +680,7 @@ class DDoSDataset(Dataset):
         indices = self.get_class_indices(selected_classes)
         return Subset(self, indices)
 
+
 def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = True, num_workers: int = 4):
     """创建数据加载器"""
     return DataLoader(
@@ -597,31 +691,78 @@ def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = Tr
         pin_memory=True
     )
 
+
 def main():
-    train_dataset = DDoSDataset(
-        data_path="C:\\Users\\17380\\train_dataset.csv",
-        preprocessor_path='./outputs\\preprocessor.pkl',
-        train=False,
-    )
-    X_pca, y = train_dataset.processor.get_pca_data()
+    # 设置日志级别以查看详细信息
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # 打印数据形状
-    print(f"X_pca shape: {X_pca.shape if X_pca is not None else 'None'}")
-    print(f"y shape: {y.shape if y is not None else 'None'}")
+    # 删除旧的模型文件（如果存在）
+    import shutil
+    if os.path.exists('models'):
+        shutil.rmtree('models')
+        logger.info("删除了旧的模型文件")
 
-    # 打印更多有用信息
-    if X_pca is not None and y is not None:
-        print(f"X_pca dtype: {X_pca.dtype}")
-        print(f"y dtype: {y.dtype}")
+    if os.path.exists('./outputs'):
+        shutil.rmtree('./outputs')
+        logger.info("删除了旧的输出文件")
 
-        # 打印标签分布情况
-        unique_labels, counts = np.unique(y, return_counts=True)
-        print("标签分布情况:")
-        for label, count in zip(unique_labels, counts):
-            print(f"  类别 {label}: {count} 个样本")
+    # 训练模式，生成新的预处理器
+    logger.info("开始训练模式，生成新的预处理器...")
+    try:
+        train_dataset = DDoSDataset(
+            data_path=r"C:\Users\17380\train_dataset.csv",
+            preprocessor_path='./outputs/preprocessor.pkl',
+            train=True,  # 训练模式
+        )
 
-        # 打印前几个样本的标签
-        print(f"前10个样本标签: {y[:10]}")
+        # 获取PCA数据
+        X_pca, y = train_dataset.processor.get_pca_data()
+
+        # 打印数据形状
+        print("\n" + "=" * 50)
+        print("数据处理结果:")
+        print("=" * 50)
+        print(f"X_pca shape: {X_pca.shape if X_pca is not None else 'None'}")
+        print(f"y shape: {y.shape if y is not None else 'None'}")
+
+        # 打印更多有用信息
+        if X_pca is not None and y is not None:
+            print(f"X_pca dtype: {X_pca.dtype}")
+            print(f"y dtype: {y.dtype}")
+
+            # 打印标签分布情况
+            unique_labels, counts = np.unique(y, return_counts=True)
+            print("\n标签分布情况:")
+            for label, count in zip(unique_labels, counts):
+                print(f"  类别 {label}: {count} 个样本 ({count / len(y) * 100:.2f}%)")
+
+            # 打印前几个样本的标签
+            print(f"\n前10个样本标签: {y[:10]}")
+
+            # 打印一些统计信息
+            print(f"\n特征数据统计:")
+            print(f"  最小值: {X_pca.min():.4f}")
+            print(f"  最大值: {X_pca.max():.4f}")
+            print(f"  平均值: {X_pca.mean():.4f}")
+            print(f"  标准差: {X_pca.std():.4f}")
+
+            # 检查是否有异常值
+            nan_count = np.isnan(X_pca).sum()
+            inf_count = np.isinf(X_pca).sum()
+            print(f"  NaN值数量: {nan_count}")
+            print(f"  无穷值数量: {inf_count}")
+
+            print("\n" + "=" * 50)
+            print("数据处理成功完成！")
+            print("=" * 50)
+        else:
+            print("数据处理失败！")
+
+    except Exception as e:
+        logger.error(f"处理过程中出现错误: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
