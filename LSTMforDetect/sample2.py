@@ -10,7 +10,7 @@ import os
 from sklearn.model_selection import train_test_split
 
 
-def split_dataset(input_file, output_dir, labels_to_remove=['UDPLag', 'WebDDoS'],
+def split_dataset(input_file, output_dir, labels_to_remove=['UDPLag', 'WebDDoS','Portmap'],
                   test_size=0.2, label_col=' Label'):
     """
     划分训练测试集
@@ -79,7 +79,7 @@ def split_dataset(input_file, output_dir, labels_to_remove=['UDPLag', 'WebDDoS']
 if __name__ == "__main__":
     # 设置文件路径
     input_file = r"C:\Users\17380\Desktop\ML-Det-main\Training\sampled_data\sampled_dataset.csv"
-    output_dir = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets"
+    output_dir = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1"
 
     # 执行划分
     split_dataset(input_file, output_dir)

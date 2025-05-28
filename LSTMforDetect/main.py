@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 定义类别映射
-CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'SNMP': 6, 'SSDP': 7, 'Syn': 8, 'TFTP': 9, 'UDP': 10, 'UDP-lag': 11}
 CLASS_NAMES = list(CLASS_MAP.keys())
 
 
@@ -91,7 +91,7 @@ def train_lstm_model(train_data_path, val_data_path, output_dir="./outputs",
     # 初始化模型
     logger.info("初始化LSTM模型...")
     input_size = 1  # 根据数据集: 样本特征形状为 [25, 1]
-    num_classes = 13  # 根据标签映射
+    num_classes = 12  # 根据标签映射
 
     model = BiLSTMDetector(
         input_size=input_size,
@@ -350,8 +350,8 @@ def evaluate_cascade_model(lstm_model, val_data_path, output_dir="./outputs", co
 def main():
     """运行训练和评估的主函数"""
     # 设置路径
-    train_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets\train_dataset.csv"  # 替换为您的训练数据路径
-    val_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets\test_dataset.csv"  # 替换为您的验证数据路径
+    train_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\train_dataset.csv"  # 替换为您的训练数据路径
+    val_data_path = r"\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\test_dataset.csv"  # 替换为您的验证数据路径
     output_dir = "./outputs"
 
     # 1. 训练LSTM模型
