@@ -21,9 +21,8 @@ logger = logging.getLogger(__name__)
 
 # 定义类别名称（只使用英文）
 # 根据最新的数据集标签映射更新
-CLASS_NAMES = [ 'BENIGN', 'DNS', 'LDAP', 'MSSQL', 'NTP', 'NetBIOS', 'Portmap', 'SNMP', 'SSDP', 'Syn', 'TFTP', 'UDP', 'UDP-lag']
-
-CLASS_MAP =  {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'SNMP': 6, 'SSDP': 7, 'Syn': 8, 'TFTP': 9, 'UDP': 10, 'UDP-lag': 11}
+CLASS_NAMES = list(CLASS_MAP.keys())
 
 def evaluate_model(model: torch.nn.Module,
                    data_loader: torch.utils.data.DataLoader,
