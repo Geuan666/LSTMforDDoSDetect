@@ -3,16 +3,13 @@
 import os
 import time
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
+import tensorflow as tf
 import logging
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Union
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.metrics import accuracy_score, classification_report
-from utils import CLASS_NAMES,CLASS_MAP
+from utils import CLASS_NAMES, CLASS_MAP
 from model import SVMModel
 
 logger = logging.getLogger(__name__)
@@ -25,34 +22,28 @@ class LSTMTrainer:
 
     def __init__(
             self,
-            model: nn.Module,
-            train_loader: DataLoader,
-            val_loader: DataLoader,
+            model: tf.keras.Model,
+            train_loader: tf.data.Dataset,
+            val_loader: tf.data.Dataset,
             learning_rate: float = 0.001,
             weight_decay: float = 0.001,
             gradient_clip_val: float = 1.0,
-            device: str = None,
+            device: str = None,  # 保留参数兼容性，TensorFlow自动处理设备
             checkpoint_dir: str = "./checkpoints"
     ):
         """
         初始化训练器
         参数:
             model: DDoS检测模型
-            train_loader: 训练数据的DataLoader
-            val_loader: 验证数据的DataLoader
+            train_loader: 训练数据的TensorFlow Dataset
+            val_loader: 验证数据的TensorFlow Dataset
             learning_rate: 优化器的学习率
             weight_decay: L2正则化系数
             gradient_clip_val: 梯度裁剪的最大范数
-            device: 运行模型的设备 (cuda/cpu)
+            device: 运行模型的设备 (保留兼容性)
             checkpoint_dir: 保存模型检查点的目录
         """
-        # 设置设备
-        if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        else:
-            self.device = torch.device(device)
-
-        self.model = model.to(self.device)
+        self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
 
@@ -61,19 +52,29 @@ class LSTMTrainer:
         self.weight_decay = weight_decay
         self.gradient_clip_val = gradient_clip_val
 
-        # 损失函数: 多类别分类的交叉熵
-        self.criterion = nn.CrossEntropyLoss()
+        # 损失函数: 多类别分类的稀疏分类交叉熵
+        self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
         # 优化器: 带有L2正则化的Adam
-        self.optimizer = optim.Adam(
-            model.parameters(),
-            lr=learning_rate,
+        self.optimizer = tf.keras.optimizers.Adam(
+            learning_rate=learning_rate,
             weight_decay=weight_decay
         )
 
         # 检查点设置
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # 检查点管理器
+        self.checkpoint = tf.train.Checkpoint(
+            optimizer=self.optimizer,
+            model=self.model
+        )
+        self.checkpoint_manager = tf.train.CheckpointManager(
+            self.checkpoint,
+            directory=checkpoint_dir,
+            max_to_keep=5
+        )
 
         # 训练历史
         self.history = {
@@ -84,98 +85,134 @@ class LSTMTrainer:
             'epochs': []
         }
 
-        logger.info(f"LSTM训练器初始化完成，设备: {self.device}, "
+        # 编译模型
+        self.model.compile(
+            optimizer=self.optimizer,
+            loss=self.loss_fn,
+            metrics=['accuracy']
+        )
+
+        logger.info(f"LSTM训练器初始化完成，"
                     f"学习率: {learning_rate}, 权重衰减: {weight_decay}, "
                     f"梯度裁剪值: {gradient_clip_val}")
 
-    def train_epoch(self, epoch: int) -> Tuple[float, float]:
-        """训练一个epoch"""
-        self.model.train()
-        total_loss = 0.0
-        correct = 0
-        total = 0
+    @tf.function
+    def train_step(self, inputs, targets):
+        """
+        训练一个步骤
+        """
+        with tf.GradientTape() as tape:
+            predictions = self.model(inputs, training=True)
+            loss = self.loss_fn(targets, predictions)
 
+            # 添加L2正则化损失
+            regularization_loss = tf.add_n(
+                [tf.nn.l2_loss(v) for v in self.model.trainable_variables]) * self.weight_decay
+            total_loss = loss + regularization_loss
+
+        # 计算梯度
+        gradients = tape.gradient(total_loss, self.model.trainable_variables)
+
+        # 梯度裁剪
+        if self.gradient_clip_val > 0:
+            gradients, _ = tf.clip_by_global_norm(gradients, self.gradient_clip_val)
+
+        # 应用梯度
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+
+        # 计算准确率
+        accuracy = tf.keras.metrics.sparse_categorical_accuracy(targets, predictions)
+
+        return total_loss, tf.reduce_mean(accuracy)
+
+    @tf.function
+    def val_step(self, inputs, targets):
+        """
+        验证一个步骤
+        """
+        predictions = self.model(inputs, training=False)
+        loss = self.loss_fn(targets, predictions)
+
+        # 添加正则化损失
+        regularization_loss = tf.add_n([tf.nn.l2_loss(v) for v in self.model.trainable_variables]) * self.weight_decay
+        total_loss = loss + regularization_loss
+
+        # 计算准确率
+        accuracy = tf.keras.metrics.sparse_categorical_accuracy(targets, predictions)
+
+        return total_loss, tf.reduce_mean(accuracy)
+
+    def train_epoch(self, epoch: int) -> Tuple[float, float]:
+        """
+        训练一个epoch
+        参数:
+            epoch: 当前epoch编号
+        返回:
+            train_loss: 平均训练损失
+            train_acc: 训练准确率
+        """
         start_time = time.time()
 
+        # 重置指标
+        train_loss_metric = tf.keras.metrics.Mean()
+        train_acc_metric = tf.keras.metrics.Mean()
+
+        batch_count = 0
         for batch_idx, (inputs, targets) in enumerate(self.train_loader):
-            # 将数据移至设备
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
+            loss, accuracy = self.train_step(inputs, targets)
 
-            # 如果targets是one-hot编码，转换为类别索引
-            if len(targets.shape) > 1 and targets.shape[1] > 1:
-                targets = targets.argmax(dim=1)
-
-            # 前向传播
-            self.optimizer.zero_grad()
-            outputs = self.model(inputs)
-
-            # 计算损失
-            loss = self.criterion(outputs, targets)
-
-            # 反向传播
-            loss.backward()
-
-            # 梯度裁剪
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_val)
-
-            # 更新权重
-            self.optimizer.step()
-
-            # 记录统计信息
-            total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
+            train_loss_metric.update_state(loss)
+            train_acc_metric.update_state(accuracy)
+            batch_count += 1
 
             # 打印进度
-            if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == len(self.train_loader):
+            if (batch_idx + 1) % 50 == 0:
                 elapsed_time = time.time() - start_time
-                logger.info(f'Epoch: {epoch} | Batch: {batch_idx + 1}/{len(self.train_loader)} | '
-                            f'Loss: {total_loss / (batch_idx + 1):.4f} | '
-                            f'Acc: {100.0 * correct / total:.2f}% | '
+                logger.info(f'Epoch: {epoch} | Batch: {batch_idx + 1} | '
+                            f'Loss: {train_loss_metric.result():.4f} | '
+                            f'Acc: {train_acc_metric.result() * 100:.2f}% | '
                             f'Time: {elapsed_time:.2f}s')
 
-        # 计算平均损失和准确率
-        avg_loss = total_loss / len(self.train_loader)
-        accuracy = 100.0 * correct / total
+        # 如果没有处理任何批次，记录警告
+        if batch_count == 0:
+            logger.warning("训练数据集为空，没有处理任何批次")
+            return 0.0, 0.0
 
-        return avg_loss, accuracy
+        avg_loss = train_loss_metric.result().numpy()
+        avg_accuracy = train_acc_metric.result().numpy() * 100
+
+        return avg_loss, avg_accuracy
 
     def validate(self) -> Tuple[float, float]:
-        """在验证数据集上验证模型"""
-        self.model.eval()
-        total_loss = 0.0
-        correct = 0
-        total = 0
+        """
+        在验证数据集上验证模型
+        返回:
+            val_loss: 平均验证损失
+            val_acc: 验证准确率
+        """
+        # 重置指标
+        val_loss_metric = tf.keras.metrics.Mean()
+        val_acc_metric = tf.keras.metrics.Mean()
 
-        with torch.no_grad():
-            for batch_idx, (inputs, targets) in enumerate(self.val_loader):
-                # 将数据移至设备
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
+        batch_count = 0
+        for inputs, targets in self.val_loader:
+            loss, accuracy = self.val_step(inputs, targets)
 
-                # 如果targets是one-hot编码，转换为类别索引
-                if len(targets.shape) > 1 and targets.shape[1] > 1:
-                    targets = targets.argmax(dim=1)
+            val_loss_metric.update_state(loss)
+            val_acc_metric.update_state(accuracy)
+            batch_count += 1
 
-                # 前向传播
-                outputs = self.model(inputs)
+        # 如果没有处理任何批次，记录警告
+        if batch_count == 0:
+            logger.warning("验证数据集为空，没有处理任何批次")
+            return 0.0, 0.0
 
-                # 计算损失
-                loss = self.criterion(outputs, targets)
+        avg_loss = val_loss_metric.result().numpy()
+        avg_accuracy = val_acc_metric.result().numpy() * 100
 
-                # 记录统计信息
-                total_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += targets.size(0)
-                correct += predicted.eq(targets).sum().item()
+        logger.info(f'验证 | Loss: {avg_loss:.4f} | Acc: {avg_accuracy:.2f}%')
 
-        # 计算平均损失和准确率
-        avg_loss = total_loss / len(self.val_loader)
-        accuracy = 100.0 * correct / total
-
-        logger.info(f'验证 | Loss: {avg_loss:.4f} | Acc: {accuracy:.2f}%')
-
-        return avg_loss, accuracy
+        return avg_loss, avg_accuracy
 
     def train(self, epochs: int, early_stopping_patience: int = 5) -> Dict:
         """
@@ -215,7 +252,7 @@ class LSTMTrainer:
                 patience_counter = 0
 
                 # 保存最佳模型
-                self.save_checkpoint(f'best_model.pth', epoch, val_loss, val_acc)
+                self.save_checkpoint('best_model', epoch, val_loss, val_acc)
                 logger.info(f"最佳模型已保存，epoch {epoch}，验证损失: {val_loss:.4f}")
             else:
                 patience_counter += 1
@@ -223,7 +260,7 @@ class LSTMTrainer:
 
             # 每5个epoch保存检查点
             if epoch % 5 == 0:
-                self.save_checkpoint(f'checkpoint_epoch_{epoch}.pth', epoch, val_loss, val_acc)
+                self.checkpoint_manager.save()
 
             # 早停
             if patience_counter >= early_stopping_patience:
@@ -245,16 +282,53 @@ class LSTMTrainer:
         """
         checkpoint_path = os.path.join(self.checkpoint_dir, filename)
 
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'val_loss': val_loss,
-            'val_acc': val_acc,
-            'history': self.history
+        # 保存模型权重（推荐方式，兼容子类化模型）
+        self.model.save_weights(checkpoint_path + '_weights.h5')
+
+        # 尝试保存为SavedModel格式（如果可能）
+        try:
+            self.model.save(checkpoint_path, save_format='tf')
+            logger.info(f"模型已保存为SavedModel格式: {checkpoint_path}")
+        except Exception as e:
+            logger.warning(f"无法保存为SavedModel格式: {e}")
+            logger.info("只保存了模型权重")
+
+        # 转换训练历史为JSON可序列化格式
+        def convert_to_serializable(obj):
+            """递归转换numpy类型为Python原生类型"""
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating, np.bool_)):
+                return obj.item()
+            elif isinstance(obj, dict):
+                return {key: convert_to_serializable(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            elif hasattr(obj, 'numpy'):  # TensorFlow tensor
+                return obj.numpy().tolist() if hasattr(obj.numpy(), 'tolist') else float(obj.numpy())
+            else:
+                return obj
+
+        # 保存训练历史和元数据
+        serializable_history = convert_to_serializable(self.history)
+
+        metadata = {
+            'epoch': int(epoch),
+            'val_loss': float(val_loss),
+            'val_acc': float(val_acc),
+            'history': serializable_history,
+            'model_config': {
+                'input_size': getattr(self.model, 'input_size', 1),
+                'hidden_size': getattr(self.model, 'hidden_size', 128),
+                'num_layers': getattr(self.model, 'num_layers', 2),
+                'num_classes': getattr(self.model, 'num_classes', 13),
+                'dropout_rate': getattr(self.model, 'dropout_rate', 0.5)
+            }
         }
 
-        torch.save(checkpoint, checkpoint_path)
+        import json
+        with open(checkpoint_path + '_metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2)
 
     def load_checkpoint(self, checkpoint_path: str) -> Dict:
         """
@@ -264,20 +338,38 @@ class LSTMTrainer:
         返回:
             checkpoint: 加载的检查点字典
         """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        # 加载模型权重
+        if os.path.exists(checkpoint_path + '_weights.h5'):
+            self.model.load_weights(checkpoint_path + '_weights.h5')
+            logger.info(f"已加载模型权重: {checkpoint_path}_weights.h5")
+        elif os.path.exists(checkpoint_path):
+            # 尝试加载SavedModel格式
+            try:
+                loaded_model = tf.keras.models.load_model(checkpoint_path, compile=False)
+                self.model.set_weights(loaded_model.get_weights())
+                logger.info(f"已从SavedModel加载权重: {checkpoint_path}")
+            except Exception as e:
+                logger.error(f"无法加载SavedModel: {e}")
+                raise FileNotFoundError(f"找不到可用的检查点文件: {checkpoint_path}")
+        else:
+            raise FileNotFoundError(f"找不到检查点文件: {checkpoint_path}")
 
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # 加载元数据
+        metadata = {}
+        if os.path.exists(checkpoint_path + '_metadata.json'):
+            import json
+            with open(checkpoint_path + '_metadata.json', 'r') as f:
+                metadata = json.load(f)
 
-        # 恢复训练历史
-        if 'history' in checkpoint:
-            self.history = checkpoint['history']
+            # 恢复训练历史
+            if 'history' in metadata:
+                self.history = metadata['history']
 
-        logger.info(f"已加载检查点，来自epoch {checkpoint['epoch']}，"
-                    f"验证损失: {checkpoint['val_loss']:.4f}，"
-                    f"验证准确率: {checkpoint['val_acc']:.2f}%")
+            logger.info(f"已加载检查点，来自epoch {metadata.get('epoch', 'unknown')}，"
+                        f"验证损失: {metadata.get('val_loss', 'unknown'):.4f}，"
+                        f"验证准确率: {metadata.get('val_acc', 'unknown'):.2f}%")
 
-        return checkpoint
+        return metadata
 
 
 class SVMTrainer:
@@ -404,13 +496,13 @@ class SVMTrainer:
         参数:
             X: 特征矩阵
             y: 标签向量
-            confusion_pairs: 混淆类别对列表，如 [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+            confusion_pairs: 混淆类别对列表，如 [(11,12), (5,7), (2,8), (9,10)]
 
         返回:
             results: 包含每个分类器准确率的字典
         """
         if confusion_pairs is None:
-            confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+            confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10)]
 
         results = {}
 

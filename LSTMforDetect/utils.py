@@ -24,23 +24,11 @@ logger = logging.getLogger(__name__)
 CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'SNMP': 6, 'SSDP': 7, 'Syn': 8, 'TFTP': 9, 'UDP': 10, 'UDP-lag': 11}
 CLASS_NAMES = list(CLASS_MAP.keys())
 
+
 def evaluate_model(model: torch.nn.Module,
                    data_loader: torch.utils.data.DataLoader,
                    device: torch.device) -> Tuple[float, float, np.ndarray, np.ndarray]:
-    """
-    在数据集上评估模型
-
-    参数:
-        model: 训练好的模型
-        data_loader: 数据集的DataLoader
-        device: 运行评估的设备
-
-    返回:
-        loss: 数据集上的平均损失
-        accuracy: 数据集上的准确率
-        y_true: 真实标签
-        y_pred: 预测标签
-    """
+    """在数据集上评估模型"""
     model.eval()
     criterion = torch.nn.CrossEntropyLoss()
 
@@ -54,22 +42,27 @@ def evaluate_model(model: torch.nn.Module,
     with torch.no_grad():
         for inputs, targets in data_loader:
             inputs, targets = inputs.to(device), targets.to(device)
-            targets = targets.squeeze()  # 移除额外维度
+
+            # 如果targets是one-hot编码，转换为类别索引
+            if len(targets.shape) > 1 and targets.shape[1] > 1:
+                target_indices = targets.argmax(dim=1)
+            else:
+                target_indices = targets.squeeze() if len(targets.shape) > 1 else targets
 
             # 前向传播
             outputs = model(inputs)
 
             # 计算损失
-            loss = criterion(outputs, targets)
+            loss = criterion(outputs, target_indices)
 
             # 记录统计信息
             total_loss += loss.item()
             _, predicted = outputs.max(1)
             total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
+            correct += predicted.eq(target_indices).sum().item()
 
             # 保存真实和预测标签
-            y_true.extend(targets.cpu().numpy())
+            y_true.extend(target_indices.cpu().numpy())
             y_pred.extend(predicted.cpu().numpy())
 
     # 计算指标

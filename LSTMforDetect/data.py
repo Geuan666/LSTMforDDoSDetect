@@ -307,6 +307,27 @@ class DataProcessor:
             logger.error("预处理阶段无法找到标签列")
             raise ValueError("无法找到标签列")
 
+        # 新增：对标签进行one-hot编码
+        if fit:
+            self.label_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+            label_encoded = self.label_encoder.fit_transform(df_processed[[label_col]])
+            self.label_classes = self.label_encoder.categories_[0]
+            logger.info(f"标签类别: {self.label_classes}")
+        else:
+            if not hasattr(self, 'label_encoder'):
+                raise ValueError("预测模式下缺少标签编码器")
+            label_encoded = self.label_encoder.transform(df_processed[[label_col]])
+
+        # 创建one-hot编码的列名
+        label_columns = [f'label_{cls}' for cls in self.label_classes]
+        label_df = pd.DataFrame(label_encoded, columns=label_columns, index=df_processed.index)
+
+        # 保存原始标签（用于后续可能的分析）
+        self.original_labels = df_processed[label_col].values
+
+        # 从df_processed中删除原始标签列
+        df_processed = df_processed.drop(columns=[label_col])
+
         # 3: 数值特征归一化
         numeric_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
         if label_col and label_col in numeric_cols:
@@ -431,58 +452,16 @@ class DataProcessor:
             logger.error("数据清洗后为空")
             return np.array([]), np.array([])
 
-        # 3. 特征预处理
+        # 特征预处理
         df_processed = self.preprocess_features(df_clean, fit=train)
         self.last_processed_df = df_processed.copy()
 
-        # 4. 提取特征和标签
-        # 获取标签列
-        label_col = None
-        if ' Label' in df_processed.columns:
-            label_col = ' Label'
-        elif 'Label' in df_processed.columns:
-            label_col = 'Label'
-        else:
-            for col in df_processed.columns:
-                if 'label' in col.lower():
-                    label_col = col
-                    logger.info(f"使用替代标签列: '{col}'")
-                    break
+        # 提取特征（不包括标签列）
+        feature_cols = [col for col in df_processed.columns if not col.startswith('label_')]
+        label_cols = [col for col in df_processed.columns if col.startswith('label_')]
 
-        if not label_col:
-            logger.error("找不到标签列")
-            return np.array([]), np.array([])
-
-        feature_cols = df_processed.columns.tolist()
-        feature_cols.remove(label_col)  # 移除标签列
-
-        # 确保特征全是数值类型
-        for col in feature_cols:
-            if not pd.api.types.is_numeric_dtype(df_processed[col]):
-                logger.warning(f"将非数值特征 '{col}' 转换为数值类型")
-                df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
-                df_processed[col] = df_processed[col].fillna(0)
-
-        # 提取特征和标签
         X = df_processed[feature_cols].values
-
-        # 确保标签是数值类型
-        y_data = df_processed[label_col]
-
-        # 检查标签类型并转换
-        if pd.api.types.is_object_dtype(y_data):
-            logger.info("检测到标签为非数值类型，进行转换")
-            # 创建标签映射字典
-            unique_labels = np.unique(y_data)
-            label_map = {label: idx for idx, label in enumerate(unique_labels)}
-            logger.info(f"标签映射: {label_map}")
-
-            # 转换标签为数值
-            y = np.array([label_map[label] for label in y_data], dtype=np.int64)
-        else:
-            y = y_data.values.astype(np.int64)
-
-        logger.info(f"标签类型: {y.dtype}, 标签唯一值: {np.unique(y)}")
+        y = df_processed[label_cols].values  # one-hot编码的标签
 
         # 检查特征是否有NaN或无穷值
         if np.isnan(X).any() or np.isinf(X).any():
@@ -491,10 +470,11 @@ class DataProcessor:
 
         logger.info(f"最终特征形状: {X.shape}, 标签形状: {y.shape}")
         logger.info("数据处理流水线完成")
-        return X, y
+
+        return X, y, self.original_labels
 
     def save_preprocessors(self, save_path: str):
-        """保存预处理器，包括PCA模型"""
+        """保存预处理器，包括PCA模型和标签编码器"""
         preprocessors = {
             'scalers': self.scalers,
             'encoders': self.encoders,
@@ -503,7 +483,9 @@ class DataProcessor:
             'minmax_scaler': self.minmax_scaler,
             'numeric_feature_order': self.numeric_feature_order,
             'base_features': self.base_features,
-            'categorical_features_base': self.categorical_features_base
+            'categorical_features_base': self.categorical_features_base,
+            'label_encoder': self.label_encoder,
+            'label_classes': self.label_classes
         }
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -513,7 +495,7 @@ class DataProcessor:
         logger.info(f"预处理器已保存至 {save_path}")
 
     def load_preprocessors(self, load_path: str):
-        """加载预处理器，包括PCA模型"""
+        """加载预处理器，包括PCA模型和标签编码器"""
         with open(load_path, 'rb') as f:
             preprocessors = pickle.load(f)
 
@@ -523,6 +505,8 @@ class DataProcessor:
         self.n_components = preprocessors.get('n_components', 20)
         self.minmax_scaler = preprocessors.get('minmax_scaler')
         self.numeric_feature_order = preprocessors.get('numeric_feature_order')
+        self.label_encoder = preprocessors.get('label_encoder')  # 新增
+        self.label_classes = preprocessors.get('label_classes')  # 新增
 
         # 兼容旧版本
         if 'base_features' in preprocessors:
@@ -552,11 +536,8 @@ class DataProcessor:
 class DDoSDataset(Dataset):
     """DDoS攻击预测的PyTorch数据集类"""
 
-    def __init__(self,
-                 data_path: str,
-                 preprocessor_path: Optional[str] = None,
-                 train: bool = True,
-                 transform: Optional[Any] = None):
+    def __init__(self, data_path: str, preprocessor_path: Optional[str] = None,
+                 train: bool = True, transform: Optional[Any] = None):
         """初始化数据集"""
         self.transform = transform
 
@@ -566,25 +547,22 @@ class DDoSDataset(Dataset):
             n_workers=1
         )
 
-        # 如果是训练模式且提供了预处理器路径，在处理后保存预处理器
+        # 处理数据
         if train and preprocessor_path:
-            self.features, self.labels = self.processor.process_data_pipeline(train=True)
+            self.features, self.labels, self.label_names = self.processor.process_data_pipeline(train=True)
             logger.info(f"保存预处理器到: {preprocessor_path}")
-            # 确保目录存在
             os.makedirs(os.path.dirname(preprocessor_path), exist_ok=True)
             self.processor.save_preprocessors(preprocessor_path)
             logger.info("预处理器保存成功")
-        # 如果是预测模式且提供了预处理器路径，先加载预处理器再处理数据
         elif not train and preprocessor_path:
             if not os.path.exists(preprocessor_path):
                 raise FileNotFoundError(f"预处理器文件不存在: {preprocessor_path}")
             logger.info(f"加载预处理器从: {preprocessor_path}")
             self.processor.load_preprocessors(preprocessor_path)
             logger.info("预处理器加载成功")
-            self.features, self.labels = self.processor.process_data_pipeline(train=False)
+            self.features, self.labels, self.label_names = self.processor.process_data_pipeline(train=False)
         else:
-            # 无预处理器路径的情况
-            self.features, self.labels = self.processor.process_data_pipeline(train=train)
+            self.features, self.labels, self.label_names = self.processor.process_data_pipeline(train=train)
             if train:
                 logger.warning("训练模式未提供预处理器保存路径，将无法在预测时使用一致的预处理")
 
@@ -596,89 +574,17 @@ class DDoSDataset(Dataset):
         logger.info(f"特征数据类型: {self.features.dtype}")
         logger.info(f"标签数据类型: {self.labels.dtype}")
 
-        # 明确转换为浮点数(特征)和整数(标签)
-        try:
-            self.features = np.array(self.features, dtype=np.float32)
-            self.labels = np.array(self.labels, dtype=np.int64)
+        # 转换为PyTorch张量
+        self.features = torch.from_numpy(self.features.astype(np.float32)).float()
+        self.labels = torch.from_numpy(self.labels.astype(np.float32)).float()  # one-hot标签保持为float类型
 
-            # 转换为PyTorch张量
-            self.features = torch.from_numpy(self.features).float()
-            self.labels = torch.from_numpy(self.labels).long().unsqueeze(1)
+        logger.info(f"特征形状: {self.features.shape}, 类型: {self.features.dtype}")
+        logger.info(f"标签形状: {self.labels.shape}, 类型: {self.labels.dtype}")
+        logger.info(f"标签类别数: {self.labels.shape[1] if len(self.labels.shape) > 1 else 1}")
 
-            logger.info(f"转换后特征形状: {self.features.shape}, 类型: {self.features.dtype}")
-            logger.info(f"转换后标签形状: {self.labels.shape}, 类型: {self.labels.dtype}")
-
-        except Exception as e:
-            # 如果转换失败，尝试逐行转换
-            logger.error(f"标准转换失败: {e}")
-            logger.info("尝试逐行转换...")
-
-            # 创建空数组
-            float_features = np.zeros((len(self.features), self.features.shape[1]), dtype=np.float32)
-            int_labels = np.zeros(len(self.labels), dtype=np.int64)
-
-            # 逐行转换
-            for i in range(len(self.features)):
-                float_features[i] = [float(val) for val in self.features[i]]
-
-            for i in range(len(self.labels)):
-                int_labels[i] = int(self.labels[i])
-
-            # 赋值回原变量并转换为PyTorch张量
-            self.features = torch.from_numpy(float_features).float()
-            self.labels = torch.from_numpy(int_labels).long().unsqueeze(1)
-
-            logger.info(f"逐行转换后特征形状: {self.features.shape}, 类型: {self.features.dtype}")
-            logger.info(f"逐行转换后标签形状: {self.labels.shape}, 类型: {self.labels.dtype}")
-
-    def __len__(self):
-        """返回数据集长度"""
-        return len(self.features)
-
-    def __getitem__(self, idx):
-        """获取单个样本，并调整形状以匹配模型输入需求 (input_size, 1)"""
-        x = self.features[idx].unsqueeze(-1)  # 添加最后一个维度，形状变为 (feature_size, 1)
-        y = self.labels[idx]
-
-        if self.transform:
-            x = self.transform(x)
-
-        return x, y
-
-    def get_class_indices(self, selected_classes):
-        """
-        获取特定类别的样本索引
-
-        参数:
-            selected_classes: 需要的类别列表或单个类别
-
-        返回:
-            indices: 符合条件的样本索引列表
-        """
-        if isinstance(selected_classes, (int, np.integer)):
-            selected_classes = [selected_classes]
-
-        # 从标签中找出对应类别的索引
-        indices = []
-        for i in range(len(self.labels)):
-            if self.labels[i].item() in selected_classes:
-                indices.append(i)
-
-        logger.info(f"找到 {len(indices)} 个属于类别 {selected_classes} 的样本")
-        return indices
-
-    def create_class_subset(self, selected_classes):
-        """
-        创建仅包含特定类别的子数据集
-
-        参数:
-            selected_classes: 需要的类别列表或单个类别
-
-        返回:
-            subset: 子数据集
-        """
-        indices = self.get_class_indices(selected_classes)
-        return Subset(self, indices)
+        # 保存类别信息
+        self.num_classes = self.labels.shape[1] if len(self.labels.shape) > 1 else 1
+        self.label_classes = self.processor.label_classes if hasattr(self.processor, 'label_classes') else None
 
 
 def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = True, num_workers: int = 4):

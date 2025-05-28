@@ -80,6 +80,9 @@ def train_lstm_model(train_data_path, val_data_path, output_dir="./outputs",
         x_sample, y_sample = train_dataset[0]
         logger.info(f"样本形状: {x_sample.shape}, 标签形状: {y_sample.shape}")
 
+        num_classes = y_sample.shape[0] if len(y_sample.shape) > 0 else len(CLASS_NAMES)
+        logger.info(f"检测到 {num_classes} 个类别")
+
         # 创建数据加载器
         train_loader = create_dataloader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
         val_loader = create_dataloader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)

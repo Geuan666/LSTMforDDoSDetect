@@ -18,8 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 定义类别映射
-CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6,
-             'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'SNMP': 6, 'SSDP': 7, 'Syn': 8, 'TFTP': 9, 'UDP': 10, 'UDP-lag': 11}
 CLASS_NAMES = list(CLASS_MAP.keys())
 
 
@@ -555,20 +554,22 @@ def preprocess_flow_features(flow_features, preprocessor_path):
         logger.error("无法应用归一化，特征顺序或归一化器缺失")
         return None
 
-    # 5. 应用PCA降维 - 修改这部分
+    # 5. 应用PCA降维
     if pca_model:
-        pca_result = pca_model.transform(numeric_df)  # 使用带有列名的DataFrame
+        pca_result = pca_model.transform(numeric_df)
         logger.info(f"PCA降维后特征形状: {pca_result.shape}")
     else:
         logger.error("无法应用PCA降维，PCA模型缺失")
         return None
 
-    # 6. 转换为LSTM模型需要的输入格式 [batch_size, seq_len=25, input_size=1]
-    # 模型期望的输入形状是 [batch_size, 25, 1]
+    # 6. 转换为LSTM模型需要的输入格式
     input_tensor = torch.FloatTensor(pca_result).unsqueeze(-1)
     logger.info(f"准备好的模型输入形状: {input_tensor.shape}")
 
-    return input_tensor
+    # 7. 获取标签类别信息（如果有）
+    label_classes = preprocessors.get('label_classes', CLASS_NAMES)
+
+    return input_tensor, label_classes
 
 
 # LSTM模型
@@ -844,11 +845,18 @@ def predict_flow_type(pcap_file, server_ip, model_path, preprocessor_path, svm_m
 
     # 2. 预处理特征
     logger.info("预处理流特征...")
-    input_tensor = preprocess_flow_features(flow_features, preprocessor_path)
+    preprocessing_result = preprocess_flow_features(flow_features, preprocessor_path)
 
-    if input_tensor is None:
+    if preprocessing_result is None:
         logger.error("特征预处理失败")
         return []
+
+    # 解包返回值
+    if isinstance(preprocessing_result, tuple):
+        input_tensor, label_classes = preprocessing_result
+    else:
+        input_tensor = preprocessing_result
+        label_classes = CLASS_NAMES
 
     # 3. 加载模型
     logger.info(f"加载模型: {model_path}")
@@ -895,7 +903,12 @@ def predict_flow_type(pcap_file, server_ip, model_path, preprocessor_path, svm_m
     results = []
     for i, (pred, prob) in enumerate(zip(predicted, probabilities)):
         flow_id = flow_features[i].get('Flow ID', f"flow_{i}")
-        pred_class = CLASS_NAMES[pred] if pred < len(CLASS_NAMES) else f"Unknown-{pred}"
+
+        # 使用正确的标签类别名称
+        if pred < len(label_classes):
+            pred_class = label_classes[pred]
+        else:
+            pred_class = f"Unknown-{pred}"
 
         result = {
             'Flow ID': flow_id,
