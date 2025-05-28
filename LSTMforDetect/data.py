@@ -307,12 +307,27 @@ class DataProcessor:
             logger.error("预处理阶段无法找到标签列")
             raise ValueError("无法找到标签列")
 
-        # 新增：对标签进行one-hot编码
+        # 保存原始标签值（在删除之前）
+        if label_col in df_processed.columns:
+            self.normalized_labels = df_processed[label_col].values
+        else:
+            logger.error(f"标签列 '{label_col}' 不存在于数据中")
+            raise KeyError(f"标签列 '{label_col}' 不存在")
+
+        # 3: 对标签进行处理
         if fit:
+            # 创建标签到索引的映射
+            unique_labels = sorted(df_processed[label_col].unique())
+            self.label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
+            self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}
+            self.label_classes = unique_labels
+            self.num_classes = len(unique_labels)
+            logger.info(f"标签类别: {self.label_classes}")
+            logger.info(f"类别数量: {self.num_classes}")
+
+            # 创建one-hot编码器
             self.label_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
             label_encoded = self.label_encoder.fit_transform(df_processed[[label_col]])
-            self.label_classes = self.label_encoder.categories_[0]
-            logger.info(f"标签类别: {self.label_classes}")
         else:
             if not hasattr(self, 'label_encoder'):
                 raise ValueError("预测模式下缺少标签编码器")
@@ -322,16 +337,11 @@ class DataProcessor:
         label_columns = [f'label_{cls}' for cls in self.label_classes]
         label_df = pd.DataFrame(label_encoded, columns=label_columns, index=df_processed.index)
 
-        # 保存原始标签（用于后续可能的分析）
-        self.original_labels = df_processed[label_col].values
-
         # 从df_processed中删除原始标签列
         df_processed = df_processed.drop(columns=[label_col])
 
-        # 3: 数值特征归一化
+        # 4: 数值特征归一化
         numeric_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
-        if label_col and label_col in numeric_cols:
-            numeric_cols.remove(label_col)
 
         logger.info(f"找到 {len(numeric_cols)} 个数值特征")
 
@@ -400,10 +410,8 @@ class DataProcessor:
 
         # 保存归一化后、PCA前的特征数据（适用于SVM）
         self.normalized_features = df_processed[numeric_cols].values
-        if label_col:
-            self.normalized_labels = df_processed[label_col].values
 
-        # 4: PCA 降维
+        # 5: PCA 降维
         if fit:
             logger.info(f"执行 PCA 降维: 从 {len(numeric_cols)} 维降至 {self.n_components} 维")
             self.pca_model = PCA(n_components=self.n_components)
@@ -421,47 +429,62 @@ class DataProcessor:
 
             pca_result = self.pca_model.transform(df_processed[numeric_cols])
 
-        # 5: 构造结果
+        # 6: 构造结果
         pca_columns = [f'pca_component_{i + 1}' for i in range(self.n_components)]
         pca_df = pd.DataFrame(pca_result, columns=pca_columns, index=df_processed.index)
 
         # 保存PCA后的特征数据
         self.pca_features = pca_result
 
-        if label_col:
-            result_df = pd.concat([pca_df, df_processed[[label_col]]], axis=1)
-        else:
-            result_df = pca_df
+        # 将PCA特征和one-hot编码的标签合并
+        result_df = pd.concat([pca_df, label_df], axis=1)
 
-        logger.info(f"PCA降维完成，最终特征维数: {result_df.shape[1] - (1 if label_col else 0)}")
+        logger.info(f"PCA降维完成，最终特征维数: {len(pca_columns)}")
+        logger.info(f"标签one-hot编码维数: {len(label_columns)}")
+
         return result_df
 
-    def process_data_pipeline(self, train: bool = True) -> Tuple[np.ndarray, np.ndarray]:
-        """完整数据处理流水线"""
+    def process_data_pipeline(self, train: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """完整数据处理流水线
+
+        返回:
+            X: 特征数据
+            y: one-hot编码的标签
+            y_names: 原始标签名称
+        """
         logger.info(f"开始数据处理流水线，模式: {'训练' if train else '验证'}")
 
         # 1. 加载数据
         df = self.load_data()
         if df.empty:
             logger.error("数据加载失败")
-            return np.array([]), np.array([])
+            return np.array([]), np.array([]), np.array([])
 
         # 2. 数据清洗
         df_clean = self.clean_data(df)
         if df_clean.empty:
             logger.error("数据清洗后为空")
-            return np.array([]), np.array([])
+            return np.array([]), np.array([]), np.array([])
 
-        # 特征预处理
+        # 3. 特征预处理
         df_processed = self.preprocess_features(df_clean, fit=train)
         self.last_processed_df = df_processed.copy()
 
-        # 提取特征（不包括标签列）
+        # 4. 提取特征和标签
+        # 分离特征列和标签列
         feature_cols = [col for col in df_processed.columns if not col.startswith('label_')]
         label_cols = [col for col in df_processed.columns if col.startswith('label_')]
 
+        if len(label_cols) == 0:
+            logger.error("未找到one-hot编码的标签列")
+            return np.array([]), np.array([]), np.array([])
+
+        # 提取特征和标签
         X = df_processed[feature_cols].values
         y = df_processed[label_cols].values  # one-hot编码的标签
+
+        # 获取原始标签名称（保存在preprocess_features中）
+        y_names = self.normalized_labels if hasattr(self, 'normalized_labels') else None
 
         # 检查特征是否有NaN或无穷值
         if np.isnan(X).any() or np.isinf(X).any():
@@ -469,9 +492,10 @@ class DataProcessor:
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
         logger.info(f"最终特征形状: {X.shape}, 标签形状: {y.shape}")
+        logger.info(f"类别数量: {y.shape[1]}")
         logger.info("数据处理流水线完成")
 
-        return X, y, self.original_labels
+        return X, y, y_names
 
     def save_preprocessors(self, save_path: str):
         """保存预处理器，包括PCA模型和标签编码器"""
@@ -586,6 +610,56 @@ class DDoSDataset(Dataset):
         self.num_classes = self.labels.shape[1] if len(self.labels.shape) > 1 else 1
         self.label_classes = self.processor.label_classes if hasattr(self.processor, 'label_classes') else None
 
+    def __len__(self):
+        """返回数据集长度"""
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        """获取单个样本，并调整形状以匹配模型输入需求"""
+        x = self.features[idx].unsqueeze(-1)  # 添加最后一个维度，形状变为 (feature_size, 1)
+        y = self.labels[idx]  # one-hot编码的标签，不需要unsqueeze
+
+        if self.transform:
+            x = self.transform(x)
+
+        return x, y
+
+    def get_class_indices(self, selected_classes):
+        """
+        获取特定类别的样本索引
+
+        参数:
+            selected_classes: 需要的类别列表或单个类别
+
+        返回:
+            indices: 符合条件的样本索引列表
+        """
+        if isinstance(selected_classes, (int, np.integer)):
+            selected_classes = [selected_classes]
+
+        # 从one-hot标签中找出对应类别的索引
+        indices = []
+        for i in range(len(self.labels)):
+            # 获取当前样本的类别（one-hot编码中最大值的索引）
+            label_idx = self.labels[i].argmax().item()
+            if label_idx in selected_classes:
+                indices.append(i)
+
+        logger.info(f"找到 {len(indices)} 个属于类别 {selected_classes} 的样本")
+        return indices
+
+    def create_class_subset(self, selected_classes):
+        """
+        创建仅包含特定类别的子数据集
+
+        参数:
+            selected_classes: 需要的类别列表或单个类别
+
+        返回:
+            subset: 子数据集
+        """
+        indices = self.get_class_indices(selected_classes)
+        return Subset(self, indices)
 
 def create_dataloader(dataset: Dataset, batch_size: int = 32, shuffle: bool = True, num_workers: int = 4):
     """创建数据加载器"""
