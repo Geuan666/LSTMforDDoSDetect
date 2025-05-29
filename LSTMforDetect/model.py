@@ -15,7 +15,7 @@ class BiLSTMDetector(nn.Module):
     用于DDoS攻击检测的双向LSTM模型
     """
 
-    def __init__(self, input_size=1, hidden_size=64, num_layers=2, num_classes=13, dropout_rate=0.2):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=2, num_classes=13, dropout_rate=0.2):
         """
         初始化DDoS检测模型
         参数:

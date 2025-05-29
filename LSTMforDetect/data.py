@@ -16,12 +16,6 @@ import json
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
 
-# 定义类别映射
-CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'Portmap': 6, 'SNMP': 7, 'SSDP': 8,
-             'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
-CLASS_NAMES = list(CLASS_MAP.keys())
-
-
 class DataProcessor:
     """
     数据处理类，负责加载、清洗和特征工程
@@ -526,7 +520,7 @@ class DataProcessor:
         self.scalers = preprocessors.get('scalers', {})
         self.encoders = preprocessors.get('encoders', {})
         self.pca_model = preprocessors.get('pca_model')
-        self.n_components = preprocessors.get('n_components', 20)
+        self.n_components = preprocessors.get('n_components', 25)
         self.minmax_scaler = preprocessors.get('minmax_scaler')
         self.numeric_feature_order = preprocessors.get('numeric_feature_order')
         self.label_encoder = preprocessors.get('label_encoder')  # 新增

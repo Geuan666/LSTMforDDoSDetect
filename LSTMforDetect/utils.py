@@ -19,11 +19,9 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 
 logger = logging.getLogger(__name__)
 
-# 定义类别名称（只使用英文）
-# 根据最新的数据集标签映射更新
+# 定义类别映射
 CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5, 'SNMP': 6, 'SSDP': 7, 'Syn': 8, 'TFTP': 9, 'UDP': 10, 'UDP-lag': 11}
 CLASS_NAMES = list(CLASS_MAP.keys())
-
 
 def evaluate_model(model: torch.nn.Module,
                    data_loader: torch.utils.data.DataLoader,
