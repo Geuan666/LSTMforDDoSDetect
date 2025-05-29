@@ -3,9 +3,9 @@ import os
 import logging
 import torch
 import numpy as np
-# 导入模块
+
 from data import DDoSDataset, create_dataloader
-from model import BiLSTMDetector, SVMModel, SVMCascadeModel
+from model import BiLSTMDetector, SVMCascadeModel
 from trainer import LSTMTrainer, SVMTrainer
 import utils
 
@@ -80,7 +80,7 @@ def train_lstm_model(train_data_path, val_data_path, output_dir="./outputs",
         x_sample, y_sample = train_dataset[0]
         logger.info(f"样本形状: {x_sample.shape}, 标签形状: {y_sample.shape}")
 
-        num_classes = y_sample.shape[0] if len(y_sample.shape) > 0 else len(CLASS_NAMES)
+        num_classes = y_sample.shape[0]
         logger.info(f"检测到 {num_classes} 个类别")
 
         # 创建数据加载器
@@ -354,7 +354,7 @@ def main():
     """运行训练和评估的主函数"""
     # 设置路径
     train_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\train_dataset.csv"  # 替换为您的训练数据路径
-    val_data_path = r"\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\test_dataset.csv"  # 替换为您的验证数据路径
+    val_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\test_dataset.csv"  # 替换为您的验证数据路径
     output_dir = "./outputs"
 
     # 1. 训练LSTM模型

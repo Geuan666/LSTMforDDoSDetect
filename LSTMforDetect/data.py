@@ -21,7 +21,7 @@ class DataProcessor:
     数据处理类，负责加载、清洗和特征工程
     """
 
-    def __init__(self, data_path: str, n_workers: int = 4, n_components: int = 25):
+    def __init__(self, data_path: str, n_workers: int = 4, n_components: int = 30):
         """
         初始化数据处理器
         Args:

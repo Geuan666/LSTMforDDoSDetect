@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # 定义类别映射
 CLASS_MAP = {'BENIGN': 0, 'DNS': 1, 'LDAP': 2, 'MSSQL': 3, 'NTP': 4, 'NetBIOS': 5,
-             'Portmap': 6, 'SNMP': 7, 'SSDP': 8, 'Syn': 9, 'TFTP': 10, 'UDP': 11, 'UDP-lag': 12}
+             'SNMP': 6, 'SSDP': 7, 'Syn': 8, 'TFTP': 9, 'UDP': 10, 'UDP-lag': 11}
 REVERSE_CLASS_MAP = {v: k for k, v in CLASS_MAP.items()}
 
 
