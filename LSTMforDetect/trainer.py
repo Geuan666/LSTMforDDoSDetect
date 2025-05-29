@@ -14,9 +14,11 @@ from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from utils import CLASS_NAMES,CLASS_MAP
 from model import SVMModel
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.metrics import accuracy_score, classification_report
+from model import XGBoostModel  # 修改导入
 
 logger = logging.getLogger(__name__)
-
 
 class LSTMTrainer:
     """
@@ -279,7 +281,6 @@ class LSTMTrainer:
 
         return checkpoint
 
-
 class SVMTrainer:
     """
     SVM模型训练器类
@@ -418,6 +419,159 @@ class SVMTrainer:
             class1_name = CLASS_NAMES[class1] if class1 < len(CLASS_NAMES) else f"Class-{class1}"
             class2_name = CLASS_NAMES[class2] if class2 < len(CLASS_NAMES) else f"Class-{class2}"
             logger.info(f"训练 {class1_name} ({class1}) vs {class2_name} ({class2}) 分类器")
+            model, accuracy = self.train_binary_classifier(X, y, class1, class2)
+            if model is not None:
+                results[(class1, class2)] = accuracy
+
+        return results
+
+class XGBoostTrainer:
+    """
+    XGBoost模型训练器类
+    """
+
+    def __init__(self, output_dir="./xgb_models"):
+        """
+        初始化XGBoost训练器
+
+        参数:
+            output_dir: 保存模型的目录
+        """
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"XGBoost训练器初始化完成，输出目录: {output_dir}")
+
+    def train_binary_classifier(self, X, y, class1, class2, test_size=0.2):
+        """
+        训练二分类XGBoost模型
+
+        参数:
+            X: 特征矩阵 (PCA降维后)
+            y: 标签向量 (可能是字符串或数字)
+            class1: 第一个类别 (数字索引)
+            class2: 第二个类别 (数字索引)
+            test_size: 测试集比例
+
+        返回:
+            best_model: 训练好的XGBoost模型
+            test_accuracy: 测试集准确率
+        """
+        # 获取类别的字符串名称
+        from utils import CLASS_NAMES
+        class1_name = CLASS_NAMES[class1] if class1 < len(CLASS_NAMES) else str(class1)
+        class2_name = CLASS_NAMES[class2] if class2 < len(CLASS_NAMES) else str(class2)
+
+        # 筛选属于这两个类别的样本 - 同时处理字符串标签和数字标签
+        mask = np.zeros(len(y), dtype=bool)
+        for i, label in enumerate(y):
+            if isinstance(label, str) and (label == class1_name or label == class2_name):
+                mask[i] = True
+            elif isinstance(label, (int, np.integer)) and (label == class1 or label == class2):
+                mask[i] = True
+
+        X_subset = X[mask]
+        y_subset = y[mask]
+
+        # 将标签转换为二分类 (0 和 1)
+        y_binary = np.zeros(len(y_subset), dtype=np.int32)
+        for i, label in enumerate(y_subset):
+            if (isinstance(label, str) and label == class2_name) or (
+                    isinstance(label, (int, np.integer)) and label == class2):
+                y_binary[i] = 1
+
+        logger.info(f"类别 {class1_name} ({class1}) 样本数: {sum(y_binary == 0)}")
+        logger.info(f"类别 {class2_name} ({class2}) 样本数: {sum(y_binary == 1)}")
+
+        # 检查样本数量
+        if len(X_subset) < 10 or sum(y_binary == 0) < 5 or sum(y_binary == 1) < 5:
+            logger.error(f"样本不足，无法训练 {class1_name} vs {class2_name} 的分类器")
+            return None, 0.0
+
+        # 分割训练集和测试集
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_subset, y_binary, test_size=test_size, stratify=y_binary, random_state=42
+        )
+
+        # XGBoost参数网格搜索
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [3, 6, 9],
+            'learning_rate': [0.01, 0.1, 0.2],
+            'subsample': [0.8, 0.9, 1.0],
+            'colsample_bytree': [0.8, 0.9, 1.0]
+        }
+
+        # 创建基础XGBoost模型
+        base_model = XGBoostModel(class1=class1, class2=class2)
+
+        # 网格搜索
+        grid_search = GridSearchCV(
+            base_model.model,
+            param_grid=param_grid,
+            cv=3,  # 3折交叉验证，比SVM的5折快一些
+            scoring='accuracy',
+            n_jobs=-1,
+            verbose=1
+        )
+
+        # 训练模型
+        logger.info("开始XGBoost网格搜索...")
+        grid_search.fit(X_train, y_train)
+
+        # 获取最佳参数
+        best_params = grid_search.best_params_
+        logger.info(f"最优参数: {best_params}")
+
+        # 使用最佳参数创建新模型
+        best_model = XGBoostModel(
+            class1=class1,
+            class2=class2,
+            n_estimators=best_params['n_estimators'],
+            max_depth=best_params['max_depth'],
+            learning_rate=best_params['learning_rate'],
+            subsample=best_params['subsample'],
+            colsample_bytree=best_params['colsample_bytree']
+        )
+
+        # 在整个训练集上重新训练
+        best_model.fit(X_train, y_train)
+
+        # 在测试集上评估
+        y_pred_binary = best_model.model.predict(X_test)
+        test_accuracy = accuracy_score(y_test, y_pred_binary)
+
+        logger.info(f"测试集准确率: {test_accuracy:.4f}")
+        logger.info(f"分类报告:\n{classification_report(y_test, y_pred_binary)}")
+
+        # 保存模型
+        model_path = os.path.join(self.output_dir, f"xgb_model_{class1}_{class2}.pkl")
+        best_model.save(model_path)
+        logger.info(f"XGBoost模型已保存至: {model_path}")
+
+        return best_model, test_accuracy
+
+    def train_multiple_classifiers(self, X, y, confusion_pairs=None):
+        """
+        训练多个二分类XGBoost模型
+
+        参数:
+            X: 特征矩阵
+            y: 标签向量
+            confusion_pairs: 混淆类别对列表，如 [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+
+        返回:
+            results: 包含每个分类器准确率的字典
+        """
+        if confusion_pairs is None:
+            confusion_pairs = [(11, 12), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+
+        results = {}
+
+        for class1, class2 in confusion_pairs:
+            from utils import CLASS_NAMES
+            class1_name = CLASS_NAMES[class1] if class1 < len(CLASS_NAMES) else f"Class-{class1}"
+            class2_name = CLASS_NAMES[class2] if class2 < len(CLASS_NAMES) else f"Class-{class2}"
+            logger.info(f"训练 {class1_name} ({class1}) vs {class2_name} ({class2}) XGBoost分类器")
             model, accuracy = self.train_binary_classifier(X, y, class1, class2)
             if model is not None:
                 results[(class1, class2)] = accuracy

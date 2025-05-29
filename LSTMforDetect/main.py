@@ -3,11 +3,13 @@ import os
 import logging
 import torch
 import numpy as np
-
+import argparse
 from data import DDoSDataset, create_dataloader
 from model import BiLSTMDetector, SVMCascadeModel
 from trainer import LSTMTrainer, SVMTrainer
 import utils
+from model import BiLSTMDetector, XGBoostModel, XGBoostCascadeModel  # 修改导入
+from trainer import LSTMTrainer, XGBoostTrainer  # 修改导入
 
 # 配置日志
 logging.basicConfig(
@@ -96,12 +98,14 @@ def train_lstm_model(train_data_path, val_data_path, output_dir="./outputs",
     input_size = 1  # 根据数据集: 样本特征形状为 [25, 1]
     num_classes = 12  # 根据标签映射
 
-    model = BiLSTMDetector(
+    model = BiLSTMDetector(  # 保持类名不变
         input_size=input_size,
         hidden_size=128,
         num_layers=2,
         num_classes=num_classes,
-        dropout_rate=0.5
+        dropout_rate=0.5,
+        bidirectional=True,  # 单向GRU
+        model_type='gru'  # 指定使用GRU
     )
 
     # 初始化训练器
@@ -349,16 +353,116 @@ def evaluate_cascade_model(lstm_model, val_data_path, output_dir="./outputs", co
 
     return cascade_model
 
+# 修改函数名
+def train_xgboost_models(train_data_path, output_dir="./outputs", confusion_pairs=None):
+    """
+    训练XGBoost模型
+
+    参数:
+        train_data_path: 训练数据路径
+        output_dir: 输出目录
+        confusion_pairs: 混淆类别对列表
+
+    返回:
+        results: 训练结果
+    """
+    if confusion_pairs is None:
+        confusion_pairs = [(10, 11), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+
+    # 创建XGBoost输出目录
+    xgb_output_dir = os.path.join(output_dir, "xgb_models")
+    os.makedirs(xgb_output_dir, exist_ok=True)
+
+    # 加载训练数据集
+    logger.info("加载数据集用于XGBoost训练...")
+    preprocessor_path = os.path.join(output_dir, "preprocessor.pkl")
+
+    try:
+        train_dataset = DDoSDataset(
+            data_path=train_data_path,
+            preprocessor_path=preprocessor_path,
+            train=False  # 使用已有的预处理器
+        )
+        logger.info(f"XGBoost训练数据集大小: {len(train_dataset)}")
+
+        # 从数据处理器获取PCA降维后的数据
+        X_pca, y = train_dataset.processor.get_pca_data()
+        if X_pca is None or y is None:
+            logger.error("无法获取PCA数据，使用处理后的特征进行训练")
+            X_pca = train_dataset.features.numpy()
+            y = train_dataset.labels.squeeze().numpy()
+
+        # 初始化XGBoost训练器
+        xgb_trainer = XGBoostTrainer(output_dir=xgb_output_dir)
+
+        # 训练多个XGBoost分类器
+        logger.info("开始训练XGBoost分类器...")
+        results = xgb_trainer.train_multiple_classifiers(X_pca, y, confusion_pairs)
+
+        # 打印训练结果
+        for (class1, class2), accuracy in results.items():
+            class1_name = CLASS_NAMES[class1] if class1 < len(CLASS_NAMES) else f"Class-{class1}"
+            class2_name = CLASS_NAMES[class2] if class2 < len(CLASS_NAMES) else f"Class-{class2}"
+            logger.info(f"XGBoost分类器 {class1_name} vs {class2_name} 准确率: {accuracy:.4f}")
+
+        return results
+
+    except Exception as e:
+        logger.error(f"XGBoost训练出错: {str(e)}")
+        raise
+
+def evaluate_cascade_model(base_model, val_data_path, output_dir="./outputs", confusion_pairs=None):
+    """
+    评估级联模型
+
+    参数:
+        base_model: 训练好的基础模型
+        val_data_path: 验证数据路径
+        output_dir: 输出目录
+        confusion_pairs: 混淆类别对列表
+
+    返回:
+        cascade_model: 级联模型
+    """
+    if confusion_pairs is None:
+        confusion_pairs = [(10, 11), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+
+    # 设置设备
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # 加载验证数据集
+    preprocessor_path = os.path.join(output_dir, "preprocessor.pkl")
+    val_dataset = DDoSDataset(
+        data_path=val_data_path,
+        preprocessor_path=preprocessor_path,
+        train=False
+    )
+    val_loader = create_dataloader(val_dataset, batch_size=128, shuffle=False, num_workers=4)
+
+    # 创建级联模型
+    logger.info("初始化XGBoost级联模型...")
+    cascade_model = XGBoostCascadeModel(  # 修改这里
+        base_model=base_model,
+        confusion_pairs=confusion_pairs,
+        confidence_threshold=0.95
+    )
+
+    # 加载XGBoost模型
+    xgb_models_dir = os.path.join(output_dir, "xgb_models")
+    cascade_model.load_xgb_models(xgb_models_dir)  # 修改这里
+
+    # 其余评估代码保持不变...
+    # ...
 
 def main():
     """运行训练和评估的主函数"""
     # 设置路径
-    train_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\train_dataset.csv"  # 替换为您的训练数据路径
-    val_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\test_dataset.csv"  # 替换为您的验证数据路径
+    train_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\train_dataset.csv"
+    val_data_path = r"C:\Users\17380\Desktop\ML-Det-main\Training\final_datasets1\test_dataset.csv"
     output_dir = "./outputs"
 
-    # 1. 训练LSTM模型
-    lstm_model, history = train_lstm_model(
+    # 1. 训练GRU模型
+    model, history = train_lstm_model(  # 实际上是GRU模型
         train_data_path=train_data_path,
         val_data_path=val_data_path,
         output_dir=output_dir,
@@ -369,9 +473,9 @@ def main():
         gradient_clip=1.0
     )
 
-    # 2. 训练SVM模型（针对容易混淆的类别对）
+    # 2. 训练XGBoost模型（针对容易混淆的类别对）
     confusion_pairs = [(10, 11), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
-    svm_results = train_svm_models(
+    xgb_results = train_xgboost_models(
         train_data_path=train_data_path,
         output_dir=output_dir,
         confusion_pairs=confusion_pairs
@@ -379,14 +483,42 @@ def main():
 
     # 3. 评估级联模型
     cascade_model = evaluate_cascade_model(
-        lstm_model=lstm_model,
+        base_model=model,
         val_data_path=val_data_path,
         output_dir=output_dir,
         confusion_pairs=confusion_pairs
     )
 
-    logger.info("DDoS检测系统训练成功完成！")
+    #使用LSTM
+    # # 1. 训练LSTM模型
+    # lstm_model, history = train_lstm_model(
+    #     train_data_path=train_data_path,
+    #     val_data_path=val_data_path,
+    #     output_dir=output_dir,
+    #     batch_size=128,
+    #     epochs=8,
+    #     learning_rate=0.001,
+    #     weight_decay=0.001,
+    #     gradient_clip=1.0
+    # )
+    #
+    # # 2. 训练SVM模型（针对容易混淆的类别对）
+    # confusion_pairs = [(10, 11), (5, 7), (2, 8), (9, 10), (0, 4), (0, 9)]
+    # svm_results = train_svm_models(
+    #     train_data_path=train_data_path,
+    #     output_dir=output_dir,
+    #     confusion_pairs=confusion_pairs
+    # )
+    #
+    # # 3. 评估级联模型
+    # cascade_model = evaluate_cascade_model(
+    #     lstm_model=lstm_model,
+    #     val_data_path=val_data_path,
+    #     output_dir=output_dir,
+    #     confusion_pairs=confusion_pairs
+    # )
 
+    logger.info("DDoS检测系统训练成功完成！")
 
 if __name__ == "__main__":
     main()
